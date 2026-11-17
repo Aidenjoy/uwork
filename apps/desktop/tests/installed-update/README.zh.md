@@ -40,7 +40,7 @@ node --import tsx apps/desktop/scripts/prepare-installed-update.ts runtime "<run
 node --import tsx apps/desktop/scripts/prepare-installed-update.ts application "<run.json>"
 ```
 
-将生成的 `bootstrap` 目录中的两个文件放在包内 `lib/` 同级，将包主入口设为 `qualification-bootstrap.mjs`。该入口在加载生产主程序前验证已安装应用的 ID 与版本。它将 Electron 用户/会话数据、Harness home 和日志放在操作系统应用数据目录下的 `dsh-update-qualification/<id>/`；两个版本使用相同路径。运行时复制器仅修改发布家族包版本和对应依赖引用，保留第三方版本，并重新校验两个副本清单和未修改的原始资源。其 `runtime-preparation/result.json` 记录哈希，并明确不宣称签名或副本版本的启动验收通过。这些合成版本属于测试物料，不是 npm 发布版本。
+将生成的 `bootstrap` 目录中的两个文件放在包内 `lib/` 同级，将包主入口设为 `qualification-bootstrap.mjs`。该入口在加载生产主程序前验证已安装应用的 ID 与版本。它将 Electron 用户/会话数据、云大师 Agent home 和日志放在操作系统应用数据目录下的 `dsh-update-qualification/<id>/`；两个版本使用相同路径。运行时复制器仅修改发布家族包版本和对应依赖引用，保留第三方版本，并重新校验两个副本清单和未修改的原始资源。其 `runtime-preparation/result.json` 记录哈希，并明确不宣称签名或副本版本的启动验收通过。这些合成版本属于测试物料，不是 npm 发布版本。
 
 `application` 命令将已构建的主程序/预加载模块、界面文件和准备好的启动入口复制到 `application/files`，并在 `application/result.json` 中记录 SHA-256。它不复制应用根目录的 `.env.windows`，也不冻结 `node_modules` 与构建工具。[验收打包配置](../../scripts/installed-update-builder.ts)校验该清单与选定的独立运行时，选用共享冻结文件和隔离包元数据，并保留常规安装器与签名钩子。其测试替换签名器，并通过固定版本构建器的配置校验；测试不生成安装器。另行授权的受监督构建仍须记录依赖/工具输入，并验证最终包内容及签名。
 
@@ -62,7 +62,7 @@ Windows [只读签名检查器](../../scripts/installed-update-signature.mjs)使
 node --import tsx apps/desktop/scripts/verify-installed-update-package.ts "<run.json>" 0.1.6-alpha.1.20260916.1 "<public.cer>" "<reviewed-7za.exe>"
 ```
 
-检查器核对实际归档内的应用身份、入口、冻结应用字节、updater 依赖版本、feed/缓存/发布者配置，并将内置 Harness 运行时与准备输入比较；测试强更策略也必须有效。它从 `app.asar` 提取运行时，并在 `app.asar.unpacked` 路径核对可执行文件签名。发生变化的运行时可执行文件须单独验签；其他运行时字节在经过 electron-builder 的依赖 manifest 转换后必须与准备输入一致。它在解包前拒绝不安全归档路径，记录安装器、应用及运行时可执行文件的签名。成功前再次核对安装包、feed/blockmap、清单、证书和工具哈希。`passed` 仅覆盖这些检查：依赖字节未冻结，安装器注册、启动、升级和数据保留仍是明确的人工检查项。保留的旧包已完成真实归档读取；本批次准备版本的完整签名包检查仍待执行。
+检查器核对实际归档内的应用身份、入口、冻结应用字节、updater 依赖版本、feed/缓存/发布者配置，并将内置 云大师 Agent 运行时与准备输入比较；测试强更策略也必须有效。它从 `app.asar` 提取运行时，并在 `app.asar.unpacked` 路径核对可执行文件签名。发生变化的运行时可执行文件须单独验签；其他运行时字节在经过 electron-builder 的依赖 manifest 转换后必须与准备输入一致。它在解包前拒绝不安全归档路径，记录安装器、应用及运行时可执行文件的签名。成功前再次核对安装包、feed/blockmap、清单、证书和工具哈希。`passed` 仅覆盖这些检查：依赖字节未冻结，安装器注册、启动、升级和数据保留仍是明确的人工检查项。保留的旧包已完成真实归档读取；本批次准备版本的完整签名包检查仍待执行。
 
 遵循独立的[上传与发布步骤](publication/README.zh.md)。先保持固定 feed 不存在以测试 404，再发布版本 1 以测试同版本。两个场景在已安装的版本 1 应用内完成之前，版本 2 元数据保留在本地。保留发布记录及远端对象用于诊断，不删除已发布的 feed 来重建较早场景。
 
