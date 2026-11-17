@@ -7,7 +7,7 @@ body {
   --dsw-alias-label-secondary: #61666b;
   --dsw-alias-label-tertiary: #81858c;
   --dsw-alias-label-primary-inverted: #fff;
-  --dsw-alias-brand-primary: var(--dsw-alias-label-primary);
+  --dsw-alias-brand-primary: #2d97d3;
   --dsw-alias-button-primary-hover: #43454a;
   --dsw-alias-button-elevated-fill: #fff;
   --dsw-alias-button-floating-hover: #f1f3f5;

@@ -1,11 +1,11 @@
 {
-  "name": "DeepSeek Harness",
-  "short_name": "DSH",
+  "name": "云大师 Agent",
+  "short_name": "云大师",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#ffffff",
-  "theme_color": "#ffffff",
+  "background_color": "#F5F5F5",
+  "theme_color": "#2D97D3",
   "icons": [
     {
       "src": "icon-192.png",
