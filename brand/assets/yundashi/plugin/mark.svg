@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <defs>
+    <linearGradient id="yundashiInfinity" x1="0" y1="0" x2="1" y2="0.65">
+      <stop offset="0" stop-color="#1E71B9"/>
+      <stop offset="0.22" stop-color="#2076BC"/>
+      <stop offset="0.5" stop-color="#2D94D1"/>
+      <stop offset="0.75" stop-color="#3DA6DC"/>
+      <stop offset="1" stop-color="#49B9E9"/>
+    </linearGradient>
+  </defs>
+  <path d="M 88.639 60.383 C 88.639 69.358, 84.475 77.523, 77.322 77.523 C 70.169 77.523, 60.116 69.358, 50 60.383 C 39.884 51.408, 29.831 43.243, 22.678 43.243 C 15.525 43.243, 11.361 51.408, 11.361 60.383 C 11.361 69.358, 15.525 77.523, 22.678 77.523 C 29.831 77.523, 39.884 69.358, 50 60.383 C 60.116 51.408, 70.169 43.243, 77.322 43.243 C 84.475 43.243, 88.639 51.408, 88.639 60.383 Z" fill="none" stroke="url(#yundashiInfinity)" stroke-width="12.721" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 28.066 28.084 A 26.156 26.156 0 0 1 72.013 28.084 L 63.523 33.566 A 16.05 16.05 0 0 0 36.556 33.566 Z" fill="#4ABFD3"/>
+</svg>

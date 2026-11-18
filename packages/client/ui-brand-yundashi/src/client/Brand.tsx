@@ -1,7 +1,7 @@
 /** Brand components occupying the sidebar and blank-home identity slots; identity values are injected by brand/apply.mjs. */
 import type { SidebarBrandMarkOwnerProps } from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type { HeroBrandMarkOwnerProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import { BRAND_COLOR, BRAND_NAME, BRAND_TAGLINE, mark512Url, markDarkUrl, markUrl, wordmarkUrl } from './brand.generated.ts'
+import { BRAND_COLOR, BRAND_NAME, BRAND_TAGLINE, markDarkUrl, markUrl, wordmarkUrl } from './brand.generated.ts'
 
 export { BRAND_NAME, BRAND_TAGLINE }
 
@@ -43,7 +43,7 @@ export function BrandName() {
 export function HeroMark({ size, className }: HeroBrandMarkOwnerProps) {
   return (
     <img
-      src={mark512Url}
+      src={markUrl}
       width={size}
       height={size}
       className={className}
