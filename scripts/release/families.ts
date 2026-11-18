@@ -36,6 +36,14 @@ const PEER_SECTIONS = ['peerDependencies'] as const
 /** The workspace root manifest, which is never a release member. */
 const WORKSPACE_ROOT_PACKAGE = '@deepseek-ai/dsh-root'
 
+/**
+ * Package scopes this repository publishes under. A fork ships its own branded
+ * packages beside the upstream ones, so membership follows a recognized scope
+ * rather than one upstream prefix; an unrecognized scope still fails loudly
+ * instead of entering a publication that cannot be resolved.
+ */
+const RELEASE_PACKAGE_SCOPES = ['@deepseek-ai/', '@yundashi/'] as const
+
 /** One peer declaration the publish order leaves unordered. */
 interface DroppedPeerEdge {
   readonly consumer: string
@@ -132,7 +140,9 @@ export abstract class ReleaseFamily {
       const name = requireString(manifest, 'name', normalized)
       const version = requireString(manifest, 'version', normalized)
       if (name === WORKSPACE_ROOT_PACKAGE) throw new Error(`${normalized} selected the workspace root`)
-      if (!name.startsWith('@deepseek-ai/')) throw new Error(`${normalized} must name an @deepseek-ai package`)
+      if (!RELEASE_PACKAGE_SCOPES.some(scope => name.startsWith(scope))) {
+        throw new Error(`${normalized} must name a supported release package scope`)
+      }
       if (seen.has(name)) throw new Error(`${name} appears twice in release family ${this.id}`)
       seen.add(name)
       members.push({

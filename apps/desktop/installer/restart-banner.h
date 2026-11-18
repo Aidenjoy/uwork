@@ -113,7 +113,9 @@ static void InstallerStyleRestartBanner(HWND window, LPCWSTR text,
         (outer.top + outer.bottom - newHeight) / 2, newWidth, newHeight, SWP_NOACTIVATE | SWP_NOZORDER);
     const HWND title = GetDlgItem(window, restart_banner::titleId);
     SetWindowLongPtrW(title, GWL_STYLE, (GetWindowLongPtrW(title, GWL_STYLE) & ~SS_TYPEMASK) | SS_LEFT | SS_NOPREFIX);
-    SetWindowTextW(title, L"DeepSeek Harness");
+    // Universal character names keep the brand legible regardless of the build host code page:
+    // cl runs without /utf-8 and these headers carry no BOM.
+    SetWindowTextW(title, L"\u4e91\u5927\u5e08 Agent");
     SendMessageW(title, WM_SETFONT, reinterpret_cast<WPARAM>(state->titleFont), FALSE);
     SetWindowPos(title, nullptr, padding + iconSize + gap, (height - textHeight) / 2,
         width - 2 * padding - gap - iconSize, titleHeight, SWP_NOZORDER | SWP_SHOWWINDOW);

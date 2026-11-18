@@ -238,7 +238,7 @@ export class CordisInspectRegistryService extends Service {
     const gateway = this.ctx.get('typertGateway')
     if (gateway !== undefined && !gateway.hasLiveClient()) {
       throw new InspectError(
-        `Client inspect query ${providerId}.${methodName} has no connected Harness page. Open or reconnect the Harness page, then retry.`,
+        `Client inspect query ${providerId}.${methodName} has no connected Yundashi Agent page. Open or reconnect the Yundashi Agent page, then retry.`,
         'INSPECT_CLIENT_UNAVAILABLE',
       )
     }
@@ -276,7 +276,7 @@ export class CordisInspectRegistryService extends Service {
       const pending = this.pending.get(requestId)
       if (pending === undefined) return
       const detail = pending.failure === undefined
-        ? 'Open or reconnect the Harness page, then retry.'
+        ? 'Open or reconnect the Yundashi Agent page, then retry.'
         : `Client failure: ${pending.failure}`
       pending.settle({
         ok: false,

@@ -60,7 +60,7 @@ function launchSuffix(): string | undefined {
 export const APP_IDENTITY: AppIdentity = {
   product: 'deepseek-harness',
   version,
-  url: 'https://github.com/deepseek-ai/deepseek-harness',
+  url: 'https://yundashi.com',
   get suffix() { return launchSuffix() },
 }
 

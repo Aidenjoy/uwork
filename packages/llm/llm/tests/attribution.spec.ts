@@ -25,7 +25,7 @@ describe('APP_IDENTITY', () => {
     expect(APP_IDENTITY).toEqual({
       product: 'deepseek-harness',
       version: manifest.version,
-      url: 'https://github.com/deepseek-ai/deepseek-harness',
+      url: 'https://yundashi.com',
     })
   })
 })
@@ -33,7 +33,7 @@ describe('APP_IDENTITY', () => {
 describe('userAgent', () => {
   it('renders product/version with the +url comment', () => {
     expect(userAgent()).toBe(
-      `deepseek-harness/${manifest.version} (+https://github.com/deepseek-ai/deepseek-harness)`,
+      `deepseek-harness/${manifest.version} (+https://yundashi.com)`,
     )
   })
 
@@ -50,13 +50,13 @@ describe('DSH_USER_AGENT_SUFFIX', () => {
   it('appends the launch suffix to the default User-Agent when read', () => {
     vi.stubEnv('DSH_USER_AGENT_SUFFIX', 'dsh-profile/my%20web')
     expect(APP_IDENTITY.suffix).toBe('dsh-profile/my%20web')
-    expect(userAgent()).toBe(`deepseek-harness/${manifest.version} (+https://github.com/deepseek-ai/deepseek-harness) dsh-profile/my%20web`)
+    expect(userAgent()).toBe(`deepseek-harness/${manifest.version} (+https://yundashi.com) dsh-profile/my%20web`)
   })
 
   it.each(['', undefined])('omits the suffix when it is %j', (value) => {
     vi.stubEnv('DSH_USER_AGENT_SUFFIX', value)
     expect(APP_IDENTITY.suffix).toBeUndefined()
-    expect(userAgent()).toBe(`deepseek-harness/${manifest.version} (+https://github.com/deepseek-ai/deepseek-harness)`)
+    expect(userAgent()).toBe(`deepseek-harness/${manifest.version} (+https://yundashi.com)`)
   })
 
   it.each(['dsh-profile/my web', 'dsh-profile/web\r\nx-injected: 1', 'dsh-profile/(web)', 'dsh-profile/a/b'])('rejects %j', (value) => {

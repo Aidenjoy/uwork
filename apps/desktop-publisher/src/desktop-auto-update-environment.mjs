@@ -25,7 +25,7 @@ const UPDATE_ENVIRONMENTS = {
     secretKeyEnvName: 'DOWNLOAD_TEST_COS_SECRET_KEY',
   },
   production: {
-    originEnvName: undefined,
+    originEnvName: 'DOWNLOAD_PROD_ORIGIN',
     fixedOrigin: 'https://download.deepseek.com',
     bucketEnvName: 'DOWNLOAD_PROD_COS_BUCKET',
     secretIdEnvName: 'DOWNLOAD_PROD_COS_SECRET_ID',
@@ -158,19 +158,26 @@ function httpsOrigin(value, name) {
  * @param {NodeJS.Platform} platform - Target Node.js platform.
  * @param {string} arch - Target Node.js architecture.
  * @returns {{ environment: 'test' | 'production', channel: 'nightly' | 'stable', target: 'mac-arm64' | 'mac-x64' | 'win-x64', origin: string, publicUrl: string, keyPrefix: string, binaryKeyPrefix: string }} Resolved updater configuration.
- * @throws {Error} When the test deployment lacks a valid HTTPS origin or a 32-character lowercase hexadecimal release ID.
+ * @throws {Error} When an overridden or required origin is not a valid HTTPS origin, or the test deployment lacks a 32-character lowercase hexadecimal release ID.
  */
 export function resolveDesktopAutoUpdateConfig(env, platform, arch) {
   const channel = resolveDesktopUpdateChannel(env)
   const environment = resolveDesktopAutoUpdateEnvironment(env)
   const target = resolveDesktopAutoUpdateTarget(platform, arch)
   const deployment = UPDATE_ENVIRONMENTS[environment]
-  let origin = deployment.fixedOrigin
-  if (origin === undefined) {
-    const { originEnvName } = deployment
-    if (originEnvName === undefined) throw new Error('desktop auto-update: selected deployment has no origin')
-    origin = httpsOrigin(requiredEnvironmentValue(env, originEnvName), originEnvName)
+  // The environment wins when set, so a deployment may be repointed without a code change; the
+  // fixed origin remains the fallback that keeps already-published releases resolvable. A
+  // deployment without a fixed origin still requires the environment value.
+  const { originEnvName, fixedOrigin } = deployment
+  let origin = fixedOrigin
+  if (originEnvName !== undefined) {
+    const override = env[originEnvName]?.trim()
+    if (override !== undefined && override !== '') origin = httpsOrigin(override, originEnvName)
+    else if (fixedOrigin === undefined) {
+      origin = httpsOrigin(requiredEnvironmentValue(env, originEnvName), originEnvName)
+    }
   }
+  if (origin === undefined) throw new Error('desktop auto-update: selected deployment has no origin')
   let releasePrefix = 'dsh-desk'
   if (environment === 'test') {
     const releaseId = requiredEnvironmentValue(env, 'DOWNLOAD_TEST_RELEASE_ID')

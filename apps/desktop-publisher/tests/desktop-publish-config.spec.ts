@@ -20,6 +20,34 @@ it('reads public settings without opening the absent credential file and require
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
+it('accepts any HTTPS production origin while still requiring an HTTPS origin and App settings', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'publish-config-origin-'))
+  try {
+    await mkdir(join(root, 'publishing'))
+    const base = { bucket: 'production-1250000000', credentialsFile: join(root, 'absent.json') }
+    const githubApp = { clientId: 'app-id', privateKeyFile: join(root, 'key.pem') }
+    const writeProduction = async (value: unknown): Promise<void> => {
+      await writeFile(join(root, 'publishing/production.json'), JSON.stringify(value))
+    }
+
+    await writeProduction({ ...base, origin: 'https://dl.yundashi.com', githubApp })
+    await expect(readDesktopPublishConfig(root, 'production')).resolves.toMatchObject({
+      origin: 'https://dl.yundashi.com',
+    })
+
+    await writeProduction({ ...base, origin: 'https://download.deepseek.com', githubApp })
+    await expect(readDesktopPublishConfig(root, 'production')).resolves.toMatchObject({
+      origin: 'https://download.deepseek.com',
+    })
+
+    await writeProduction({ ...base, origin: 'http://dl.yundashi.com', githubApp })
+    await expect(readDesktopPublishConfig(root, 'production')).rejects.toThrow(/HTTPS origin/u)
+
+    await writeProduction({ ...base, origin: 'https://dl.yundashi.com' })
+    await expect(readDesktopPublishConfig(root, 'production')).rejects.toThrow(/GitHub App configuration/u)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
 it('does not include malformed credential contents in errors', async () => {
   const root = await mkdtemp(join(tmpdir(), 'publish-config-'))
   try {

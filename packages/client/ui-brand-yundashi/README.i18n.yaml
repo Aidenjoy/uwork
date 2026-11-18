@@ -1,0 +1,22 @@
+# Bilingual-pair consistency record for README.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write packages/client/ui-brand-yundashi/README.md
+/:
+  en: 1e19313f0a68d71d
+  zh: c063d415baa33943
+/yundashi-dsh-client-ui-brand:
+  en: 9c686c6693b7f83f
+  zh: b43f2c8389fc7892
+/yundashi-dsh-client-ui-brand/overview:
+  en: d51938889a5b764b
+  zh: 4fa752752e706dcc
+/yundashi-dsh-client-ui-brand/use-this-package:
+  en: 54537ddcf2fee052
+  zh: 5fb7d15b5a85811d
+/yundashi-dsh-client-ui-brand/build:
+  en: 7e7c505114d8afa5
+  zh: f84abf07be3aee16
+/yundashi-dsh-client-ui-brand/known-limitations:
+  en: 068abcb31e2bed77
+  zh: 59f9ad8c265abacc

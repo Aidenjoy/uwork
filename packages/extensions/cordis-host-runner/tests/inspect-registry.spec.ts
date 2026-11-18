@@ -120,7 +120,7 @@ describe('Client inspect completion', () => {
     expect(requests).toEqual([])
     expect(vi.getTimerCount()).toBe(0)
     expect(await query.result).toEqual({
-      error: 'InspectError: Client inspect query Service.listService has no connected Harness page. Open or reconnect the Harness page, then retry.',
+      error: 'InspectError: Client inspect query Service.listService has no connected Yundashi Agent page. Open or reconnect the Yundashi Agent page, then retry.',
       code: 'INSPECT_CLIENT_UNAVAILABLE',
     })
     expect(registry.list()).toHaveLength(1)
@@ -135,7 +135,7 @@ describe('Client inspect completion', () => {
     await vi.advanceTimersByTimeAsync(99)
     expect(query.settled()).toBe(false)
     await vi.advanceTimersByTimeAsync(1)
-    expect(await query.result).toEqual({ error: timeout + 'Open or reconnect the Harness page, then retry.', code: 'INSPECT_TIMEOUT' })
+    expect(await query.result).toEqual({ error: timeout + 'Open or reconnect the Yundashi Agent page, then retry.', code: 'INSPECT_TIMEOUT' })
     expect(answer(query)).toEqual({ accepted: false })
     expect(vi.getTimerCount()).toBe(0)
   })
@@ -192,7 +192,7 @@ describe('Client inspect completion', () => {
     const query = start()
     expect(registry.resolveClientQuery(AGENT_B, query.request.requestId, failure)).toEqual({ accepted: false })
     await vi.advanceTimersByTimeAsync(100)
-    expect(await query.result).toEqual({ error: timeout + 'Open or reconnect the Harness page, then retry.', code: 'INSPECT_TIMEOUT' })
+    expect(await query.result).toEqual({ error: timeout + 'Open or reconnect the Yundashi Agent page, then retry.', code: 'INSPECT_TIMEOUT' })
   })
 
   it('ends unanswered requests and accepts a fresh retry after manifest publication', async () => {
@@ -200,7 +200,7 @@ describe('Client inspect completion', () => {
     registry.syncClientManifest([manifest])
     expect(requests).toHaveLength(1)
     await vi.advanceTimersByTimeAsync(100)
-    expect(await first.result).toEqual({ error: timeout + 'Open or reconnect the Harness page, then retry.', code: 'INSPECT_TIMEOUT' })
+    expect(await first.result).toEqual({ error: timeout + 'Open or reconnect the Yundashi Agent page, then retry.', code: 'INSPECT_TIMEOUT' })
     const retry = start()
     expect(retry.request.requestId).not.toBe(first.request.requestId)
     expect(answer(first)).toEqual({ accepted: false })

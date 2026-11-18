@@ -1,7 +1,7 @@
 {
   "name": "@yundashi/dsh-client-ui-brand",
   "description": "云大师 Agent brand artwork, sidebar identity and blank-home identity slots",
-  "version": "0.2.2-rc.1",
+  "version": "0.2.2-rc.3",
   "publishConfig": {
     "access": "public"
   },

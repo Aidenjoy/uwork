@@ -30,7 +30,13 @@ function activeKey() {
   return 'yundashi'
 }
 
-function loadProfile(key) {
+/**
+ * Read, validate and freeze one profile by key, ignoring `DSH_BRAND_PROFILE` and `brand/local.json`.
+ * Callers that must not depend on machine state use this with an explicit key.
+ * @param {string} key Profile file name without the `.json` extension.
+ * @returns {Readonly<Record<string, string>>} The validated and frozen profile.
+ */
+export function loadProfile(key) {
   const file = join(BRAND_ROOT, 'profiles', `${key}.json`)
   if (!existsSync(file)) throw new Error(`brand: unknown profile "${key}" (expected ${file})`)
   const profile = JSON.parse(readFileSync(file, 'utf8'))
@@ -52,3 +58,10 @@ function loadProfile(key) {
 export const brand = loadProfile(activeKey())
 /** Installer/artifact filename prefix shared by the whole release chain. */
 export const artifactPrefix = brand.artifactPrefix
+
+/**
+ * The profile that names published releases, pinned by key rather than resolved from
+ * `DSH_BRAND_PROFILE` or `brand/local.json`. Release-critical constants read this so a
+ * developer's local profile selection can never change what a published artifact claims.
+ */
+export const releaseBrand = loadProfile('yundashi')

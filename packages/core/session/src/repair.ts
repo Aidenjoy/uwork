@@ -28,7 +28,14 @@ export const TOOL_OUTCOME_UNKNOWN = 'TOOL_OUTCOME_UNKNOWN'
  */
 export type OpenTurnCloseCause = { readonly kind: 'interrupted' } | { readonly kind: 'forked' }
 
-/** Model-visible wording of the synthetic error tool results, keyed by cause. */
+/**
+ * Model-visible wording of the synthetic error tool results, keyed by cause.
+ *
+ * `interrupted.notStarted` is a durable session-format constant, NOT brand copy:
+ * both session-format-v0-to-v1/relationships.ts and session-format-v3-to-v4/relationships.ts
+ * admit repaired V4 sessions by pinning that sentence verbatim. Rewording it for
+ * branding makes crash-recovery sessions unreadable by the engine that wrote them.
+ */
 const CLOSER_TEXT = {
   interrupted: {
     started: 'The tool call was interrupted after it was recorded, but no result was durably recorded. Its outcome is unknown. Decide whether to retry from the tool semantics: retry only if the operation is read-only or idempotent; if it may have side effects, first verify external state or ask the user. Do not retry blindly.',

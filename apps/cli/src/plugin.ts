@@ -39,7 +39,7 @@ async function versionCommand(profile: string, args: readonly string[]): Promise
       request = { packageVersion, runtimeVersion }
     }
     if (command === 'allow-version') {
-      process.stderr.write('dsh: warning: allowing incompatible plugin versions can break the application or corrupt data. Approval applies only to the exact package and DSH versions.\n')
+      process.stderr.write('dsh: warning: allowing incompatible plugin versions can break the application or corrupt data. Approval applies only to the exact package and Yundashi Agent versions.\n')
     }
     const dir = resolveProfileDir(profile)
     if (profile !== 'desktop') await mkdir(dir, { recursive: true })

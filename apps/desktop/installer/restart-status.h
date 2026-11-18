@@ -122,7 +122,9 @@ extern "C" void CALLBACK ShowRestartStatusW(HWND, HINSTANCE instance, LPWSTR raw
     layout.dialog.cy = 50;
     HWND window = CreateDialogIndirectParamW(instance, &layout.dialog, nullptr, restart_status::Dialog, 0);
     if (!window) return;
-    SetWindowTextW(window, L"DeepSeek Harness");
+    // Universal character names keep the brand legible regardless of the build host code page:
+    // cl runs without /utf-8 and these headers carry no BOM.
+    SetWindowTextW(window, L"\u4e91\u5927\u5e08 Agent");
     const DWORD style = WS_CHILD | WS_VISIBLE;
     HWND image = CreateWindowW(L"STATIC", L"", style | SS_ICON, 0,0,0,0, window,
         reinterpret_cast<HMENU>(restart_banner::iconId), instance, nullptr);

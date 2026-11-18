@@ -408,9 +408,15 @@ const KIND_EXAMPLE: Readonly<Record<string, readonly string[]>> = {
   hoc: ["id: 'my-layer'", 'order: 100'],
 }
 
-/** Drop the `@deepseek-ai/dsh-` prefix so rows stay readable. */
+/** Package scopes whose `dsh-` prefix is a workspace convention rather than part of the name. */
+const SHORT_PACKAGE_PREFIXES = ['@deepseek-ai/dsh-', '@yundashi/dsh-'] as const
+
+/** Drop a workspace scope-plus-`dsh-` prefix so rows stay readable. */
 function shortPackage(name: string): string {
-  return name.replace('@deepseek-ai/dsh-', '')
+  for (const prefix of SHORT_PACKAGE_PREFIXES) {
+    if (name.startsWith(prefix)) return name.slice(prefix.length)
+  }
+  return name
 }
 
 /** Truncate an over-long declaration, naming the truncation. */

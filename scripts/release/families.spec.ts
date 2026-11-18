@@ -126,6 +126,22 @@ describe('release families', () => {
     expect(releaseFamily('dsh').members(root).map(entry => entry.name)).toEqual(['@deepseek-ai/dsh-public'])
   })
 
+  it('accepts every supported release scope and still rejects an unknown one', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-release-scope-'))
+    roots.push(root)
+    write(join(root, 'packages/client/brand/package.json'), '{"name":"@yundashi/dsh-client-ui-brand","version":"0.0.1"}\n')
+    write(join(root, 'packages/client/upstream/package.json'), '{"name":"@deepseek-ai/dsh-example","version":"0.0.1"}\n')
+
+    expect(releaseFamily('dsh').members(root).map(entry => entry.name)).toEqual([
+      '@yundashi/dsh-client-ui-brand',
+      '@deepseek-ai/dsh-example',
+    ])
+
+    write(join(root, 'packages/client/unknown/package.json'), '{"name":"@other/dsh-unknown","version":"0.0.1"}\n')
+    expect(() => releaseFamily('dsh').members(root))
+      .toThrow('packages/client/unknown/package.json must name a supported release package scope')
+  })
+
   it('publishes unlisted experimental packages while retaining private exclusions', () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-release-experimental-'))
     roots.push(root)

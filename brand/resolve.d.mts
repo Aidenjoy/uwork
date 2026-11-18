@@ -11,5 +11,7 @@ export interface BrandProfile {
 }
 export const BRAND_ROOT: string
 export const REPO_ROOT: string
+export function loadProfile(key: string): BrandProfile
 export const brand: BrandProfile
 export const artifactPrefix: string
+export const releaseBrand: BrandProfile
