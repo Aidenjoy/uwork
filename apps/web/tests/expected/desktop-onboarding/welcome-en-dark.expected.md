@@ -1,6 +1,6 @@
-- region "Welcome to DeepSeek Harness":
-  - heading "Welcome to DeepSeek Harness" [level=1]:
+- region "Welcome to Yundashi Agent":
+  - heading "Welcome to Yundashi Agent" [level=1]:
     - text: Welcome to
-    - emphasis: DeepSeek Harness
-  - paragraph: DeepSeek Harness works in a local folder and uses tools to read and write files on your computer. It can help you research and organize information, create documents and spreadsheets, write code, troubleshoot issues, and more.
+    - emphasis: 云大师 Agent
+  - paragraph: Yundashi Agent works in a local folder and uses tools to read and write files on your computer. It can help you research and organize information, create documents and spreadsheets, write code, troubleshoot issues, and more.
   - button "Get started"

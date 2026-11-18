@@ -10,7 +10,7 @@ import { join } from 'node:path'
 
 function requireDesktopProfile(dir: string): void {
   if (!existsSync(join(dir, 'package.json'))) {
-    throw new Error('Open DeepSeek Harness Desktop once to initialize its profile, then fully quit it before running dsh plugin --profile desktop.')
+    throw new Error('Open Yundashi Agent Desktop once to initialize its profile, then fully quit it before running dsh plugin --profile desktop.')
   }
 }
 
@@ -52,7 +52,7 @@ async function versionCommand(profile: string, args: readonly string[]): Promise
         process.stdout.write(JSON.stringify(exemptions, undefined, 2) + '\n')
       } else {
         await setProfileVersionExemption(dir, request.packageVersion, request.runtimeVersion, command === 'allow-version', acceptRisk)
-        process.stdout.write(`dsh: ${command === 'allow-version' ? 'allowed' : 'revoked'} ${request.packageVersion} for DSH ${request.runtimeVersion}\n`)
+        process.stdout.write(`dsh: ${command === 'allow-version' ? 'allowed' : 'revoked'} ${request.packageVersion} for Yundashi Agent ${request.runtimeVersion}\n`)
       }
     }, { waitMs: 120000 })
     return 0
