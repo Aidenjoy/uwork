@@ -6,6 +6,7 @@ import { basename, dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import { notarizeMacOS } from './notarize-macos.mjs'
 import { packagingStep } from './packaging-step.mjs'
+import { artifactPrefix } from '../../../brand/resolve.mjs'
 import {
   resolveMacOSNotarizationEnvironment,
   resolveMacOSSigningEnvironment,
@@ -110,7 +111,7 @@ export async function packageMacOSArtifacts(
     await verifyMacOSAppUpdateConfig(dmgApp, update)
     apple.verifySignature(zipApp, expected)
     apple.verifySignature(dmgApp, expected)
-    const base = `yundashi-agent-${version}-mac-${arch}`
+    const base = `${artifactPrefix}-${version}-mac-${arch}`
     const artifacts = [
       [dmgOutput, `${base}.dmg`],
       [zipOutput, `${base}.zip`],
