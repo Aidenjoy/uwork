@@ -10,7 +10,8 @@ afterEach(() => { vi.useRealTimers() })
 
 const listing = (...ids: string[]): ModelListing => ({
   skipped: 0,
-  entries: ids.map(id => ({ id, requirement: { kind: 'none' }, capabilities: { usable: true, facts: { inputModalities: ['text'] } } })),
+  gateway: false,
+  entries: ids.map(id => ({ id, requirement: { kind: 'none' }, selfDescribed: false, capabilities: { usable: true, facts: { inputModalities: ['text'] } } })),
 })
 
 function harness(timeoutMs = 60_000, honorsAbort = true) {

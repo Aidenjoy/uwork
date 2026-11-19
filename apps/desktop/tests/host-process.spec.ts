@@ -456,6 +456,35 @@ it.each([null, 'stable-account'])('carries Platform identity %s over private IPC
   expect(changed).toHaveBeenLastCalledWith(null)
 })
 
+it.each([
+  'http://127.0.0.1:3000',
+  'http://10.1.2.3:3000',
+  'http://10.0.0.5:3000',
+  'http://172.20.0.5:3000',
+])('accepts private HTTP Platform origin %s on private IPC', async (origin) => {
+  const session = { origin, token: 'fixture-secret', userId: null, embeddedPageDist: 'feat/test' }
+  const runtime = projectWithHost(HTTP_HOST.replace("process.send({ type: 'ready'",
+    `process.send({ type: 'platform-session', session: ${JSON.stringify(session)} }); process.send({ type: 'ready'`))
+  const changed = vi.fn()
+  const host = new DesktopHostProcess(process.execPath, runtime, runtime, undefined, process.env, undefined, undefined, undefined, changed)
+  hosts.push(host)
+  await host.start()
+  expect(changed).toHaveBeenCalledWith(session)
+  await host.stop()
+})
+
+it.each(['http://platform.example.com', 'http://8.8.8.8:3000'])('rejects public HTTP Platform origin %s on private IPC', async (origin) => {
+  const session = { origin, token: 'fixture-secret', userId: null, embeddedPageDist: 'feat/test' }
+  const runtime = projectWithHost(HTTP_HOST.replace("process.send({ type: 'ready'",
+    `process.send({ type: 'platform-session', session: ${JSON.stringify(session)} }); process.send({ type: 'ready'`))
+  const changed = vi.fn()
+  const host = new DesktopHostProcess(process.execPath, runtime, runtime, undefined, process.env, undefined, undefined, undefined, changed)
+  hosts.push(host)
+  await expect(host.start()).rejects.toThrow('invalid IPC event')
+  expect(changed.mock.calls).toEqual([[null]])
+  await host.stop()
+})
+
 it.each([undefined, '', 7])('rejects malformed Platform account identity %s on private IPC', async (userId) => {
   const session = { origin: 'https://platform.deepseek.com', token: 'fixture-secret', userId }
   const runtime = projectWithHost(HTTP_HOST.replace("process.send({ type: 'ready'",

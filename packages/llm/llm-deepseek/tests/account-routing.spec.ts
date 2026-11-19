@@ -28,7 +28,7 @@ afterEach(async () => {
 /** Fail the account listing request fast, so the route serves its bundled catalog and fetch mocks see only Messages traffic. */
 function listingRequest(input: string | URL | Request): Response | undefined {
   const url = new URL(input instanceof Request ? input.url : input)
-  return url.pathname === '/models' ? new Response(null, { status: 404 }) : undefined
+  return url.pathname.endsWith('/models') ? new Response(null, { status: 404 }) : undefined
 }
 
 async function harness() {
@@ -187,7 +187,10 @@ it('never borrows an account token for a missing API key', async () => {
   const ctx = new Context()
   contexts.push(ctx)
   const resolveToken = vi.fn(async (_url: string) => 'fixture-account-token')
-  ctx.provide('deepseekAccount', { resolveToken: (url: string): Promise<string | undefined> => resolveToken(url) } as DeepSeekAccount)
+  ctx.provide('deepseekAccount', {
+    resolveToken: (url: string): Promise<string | undefined> => resolveToken(url),
+    resolveLanguageKey: async (): Promise<string | undefined> => undefined,
+  } as DeepSeekAccount)
   await ctx.plugin(LlmRuntime)
   await ctx.plugin(DeepSeek, {})
   await ctx.plugin(AccountProvider, {})
@@ -201,13 +204,16 @@ it('never borrows an account token for a missing API key', async () => {
 
 it('propagates account sign-out to the HTTP request signal', async () => {
   const ctx = await harness()
-  ctx.provide('deepseekAccount', { resolveToken: async (_url: string) => 'fixture-account-token' } as DeepSeekAccount)
+  ctx.provide('deepseekAccount', {
+    resolveToken: async (_url: string) => 'fixture-account-token',
+    resolveLanguageKey: async () => 'fixture-account-token',
+  } as DeepSeekAccount)
   const started = Promise.withResolvers<AbortSignal>()
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
     const listed = listingRequest(url)
     if (listed !== undefined) return listed
     const signal = init!.signal!
-    expect(new Headers(init!.headers).get('x-dsh-auth-token')).toBe('fixture-account-token')
+    expect(new Headers(init!.headers).get('authorization')).toBe('Bearer fixture-account-token')
     started.resolve(signal)
     return new Promise<Response>((_resolve, reject) => {
       signal.addEventListener('abort', () => { reject(new Error('request aborted', { cause: signal.reason })) }, { once: true })
@@ -255,7 +261,10 @@ it('lists each DeepSeek route only when its own credential is present', async ()
   vi.stubGlobal('fetch', vi.fn((input: string | URL | Request) => Promise.resolve(listingRequest(input) ?? new Response(null, { status: 500 }))))
   const ctx = await harness()
   let token: string | undefined
-  ctx.provide('deepseekAccount', { resolveToken: async (url: string) => new URL(url).origin === 'https://api.deepseek.com' ? token : undefined } as DeepSeekAccount)
+  ctx.provide('deepseekAccount', {
+    resolveToken: async (url: string) => new URL(url).origin === 'https://api.deepseek.com' ? token : undefined,
+    resolveLanguageKey: async () => token,
+  } as DeepSeekAccount)
   expect(await ctx.llm.listModels('deepseek-account')).toEqual([])
   expect(await ctx.llm.listModels('deepseek-official')).toEqual([])
   token = 'fixture-account-token'
@@ -270,7 +279,10 @@ it('lists each DeepSeek route only when its own credential is present', async ()
 
 it('surfaces credential storage failures during catalog discovery', async () => {
   const ctx = await harness()
-  ctx.provide('deepseekAccount', { resolveToken: async (_url: string): Promise<string | undefined> => { throw new Error('storage unavailable') } } as DeepSeekAccount)
+  ctx.provide('deepseekAccount', {
+    resolveToken: async (_url: string): Promise<string | undefined> => { throw new Error('storage unavailable') },
+    resolveLanguageKey: async (): Promise<string | undefined> => { throw new Error('storage unavailable') },
+  } as DeepSeekAccount)
   await expect(ctx.llm.listModels('deepseek-account')).rejects.toThrow('storage unavailable')
 })
 

@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto'
 import WebSocket from 'ws'
 import { parseRemoteStreamServerMessage, REMOTE_STREAM_MUX_PATH } from '@deepseek-ai/dsh-api-gateway/stream-protocol'
+import { isPrivateHttpHost } from '@deepseek-ai/dsh-deepseek-account'
 import type { AccountClientMetadata, AccountView, SignInAttemptId } from '@deepseek-ai/dsh-deepseek-account/types'
 
 /** Authenticated unary caller shared with native onboarding. */
@@ -44,11 +45,13 @@ export function accountView(value: unknown): AccountView {
   }
 }
 
-/** Only HTTP loopback or HTTPS destinations can leave the native app. */
+/** Only HTTPS, loopback HTTP, or private-intranet HTTP destinations can leave the native app. */
 function validateBrowserDestination(value: string): void {
   const url = new URL(value)
   const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
-  if (url.username || url.password || !(url.protocol === 'https:' || (loopback && url.protocol === 'http:'))) {
+  const plainHttpAllowed = loopback || isPrivateHttpHost(url.hostname)
+  if (url.username || url.password
+    || !(url.protocol === 'https:' || (plainHttpAllowed && url.protocol === 'http:'))) {
     throw new Error('desktop account: invalid browser destination')
   }
 }

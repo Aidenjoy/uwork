@@ -224,7 +224,7 @@ function replayedAssistant(
         ...replay.type === 'tool-call' && replay.namespace !== undefined ? { namespace: replay.namespace } : {},
       }
       /* v8 ignore next -- readReplayState rejects unknown replay tags, so an equal plugin-added Harness tag cannot reach this switch */
-      default: return invalidReplay(`block ${index} has an unsupported Harness type`)
+      default: return invalidReplay(`block ${index} has an unsupported Yundashi Agent type`)
     }
   })
   const assistant: AssistantMessage = {

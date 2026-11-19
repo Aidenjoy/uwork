@@ -67,6 +67,7 @@ export function apply(ctx: Context, config: Config): void {
       overrides: {},
       routeMaxTokens: connection.maxTokens,
       clientVersion: APP_IDENTITY.version,
+      offerUnknownListed: view.listing?.gateway === true,
     })
     if (view.listing !== reportedListing) {
       reportedListing = view.listing

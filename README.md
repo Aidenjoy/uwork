@@ -1,8 +1,8 @@
-# DeepSeek Harness
+# Yundashi Agent
 
 English | [中文](README.zh.md)
 
-DeepSeek Harness (`dsh`) is an open-source agent harness developed by [DeepSeek AI](https://deepseek.com).
+Yundashi Agent (`dsh`) is an open-source agent harness developed by [DeepSeek AI](https://deepseek.com).
 
 It is built on an **everything-is-a-plugin** architecture and powered by [Cordis](https://github.com/cordiverse/cordis), whose design is described in [_A Programming Paradigm for Spatiotemporal Composability_](https://arxiv.org/abs/2608.25512).
 
@@ -10,7 +10,7 @@ Documentation: [https://deepseek-harness.github.io/deepseek-harness/](https://de
 
 ## Developer preview
 
-DeepSeek Harness is in _developer preview_ and iterating rapidly. **THERE WILL BE COMPATIBILITY-BREAKING CHANGES.**
+Yundashi Agent is in _developer preview_ and iterating rapidly. **THERE WILL BE COMPATIBILITY-BREAKING CHANGES.**
 
 Review the [safety notice](SAFETY.md) before running the project.
 
@@ -62,7 +62,7 @@ For agents, follow [AGENTS.md](AGENTS.md).
 
 ```bibtex
 @misc{deepseek-harness2026,
-  title={DeepSeek Harness: Everything is a Plugin},
+  title={Yundashi Agent: Everything is a Plugin},
   author={DeepSeek-AI},
   year={2026},
   publisher={GitHub},

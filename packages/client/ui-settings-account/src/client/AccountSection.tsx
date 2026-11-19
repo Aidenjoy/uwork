@@ -137,7 +137,8 @@ export function AccountSection({ t, useAccount, useTheme, start, cancel, openPla
   const status = failed || streamFailed || attempt?.phase === 'failed' ? t('failed')
     : attempt?.phase === 'expired' ? t('expired')
       : active ? t(attempt.phase === 'initializing' ? 'initializing' : attempt.phase === 'waiting-browser' ? 'waiting' : 'completing')
-        : signedIn ? profile?.contact ?? t(details?.profile === undefined ? 'loading' : 'profileUnavailable') : t('signInDescription')
+        : signedIn ? profile?.contact ?? profile?.username
+          ?? t(details?.profile === undefined ? 'loading' : 'profileUnavailable') : t('signInDescription')
   if (!signedIn && !active) return (
     <section className={css.signedOut} aria-label={t('nav')}>
       <div className={css.signedOutContent}>

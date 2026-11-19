@@ -14,13 +14,14 @@ import type { AccountUpdate, AccountDetails } from '@deepseek-ai/dsh-deepseek-ac
 import type { OnboardingChange } from './onboarding-contract.ts'
 import type { PlatformBridge } from './PlatformOverlay.tsx'
 import { ContactConfig, CONTACT_CONFIG_GLOBAL } from '../contact-config.ts'
+import { PlatformPagesConfig, PLATFORM_PAGES_GLOBAL } from '../platform-pages-config.ts'
 import { contactUrl } from './contact-url.ts'
 import { authorizeUrlWithTheme } from './authorize-url.ts'
 import { BrowserLogin } from './browser-login.ts'
 import { AccountOnboarding } from './AccountOnboarding.tsx'
 import { AccountPlatformHost, type AccountPlatformHostInjected } from './AccountPlatformHost.tsx'
 import { AccountMenu } from './AccountMenu.tsx'
-import { createPlatformPages, type PlatformPages } from './platform-pages.ts'
+import { createPlatformPages, type PlatformPageExit, type PlatformPages } from './platform-pages.ts'
 import { AccountSection, type AccountSnapshot, type AccountSectionInjected } from './AccountSection.tsx'
 import { accountClientMetadata } from './client-metadata.ts'
 import { en, ja, es, fr, de, ru, pt, zh, type AccountKey } from './locales.ts'
@@ -50,6 +51,8 @@ export function apply(ctx: Context): void {
   const t = ctx.locale.bind('settings.account')
   const page = globalThis as Partial<Record<typeof CONTACT_CONFIG_GLOBAL, unknown>>
   const config = ContactConfig(page[CONTACT_CONFIG_GLOBAL] ?? {})
+  const pagesConfig = PlatformPagesConfig(
+    (globalThis as Partial<Record<typeof PLATFORM_PAGES_GLOBAL, unknown>>)[PLATFORM_PAGES_GLOBAL] ?? {})
   let snapshot: AccountSnapshot = {
     view: undefined, details: undefined, avatar: undefined, failed: false, loginVisible: false, desktopOnboardingVisible: desktop,
   }
@@ -172,11 +175,23 @@ export function apply(ctx: Context): void {
    * @param reRead - that surface's read after a returned top-up page.
    * @returns the opener that surface injects.
    */
-  const platformPageOpener = (reRead: () => Promise<void>): PlatformPages['open'] =>
-    (page, onClose) => platformPages.open(page, (reason) => {
+  const platformPageOpener = (reRead: () => Promise<void>): PlatformPages['open'] => (target, onClose) => {
+    const returned = (reason: PlatformPageExit): void => {
       onClose(reason)
-      if (reason === 'returned' && page === 'top-up') void refreshAfterReturn(refreshing, reRead)
-    })
+      if (reason === 'returned' && target === 'top-up') void refreshAfterReturn(refreshing, reRead)
+    }
+    // A console that authenticates with the browser session it was signed in with cannot work inside
+    // the isolated native view, which starts every load with no session of its own. Hand those
+    // destinations to the system browser and report the page as returned at once, so the entry that
+    // asked still dismisses and re-reads as if the viewer had come back.
+    if (pagesConfig.embeddedPlatformPages && nativePlatform !== undefined) {
+      return platformPages.open(target, returned)
+    }
+    const url = target === 'usage' ? snapshot.view?.links.usageUrl : snapshot.view?.links.topUpUrl
+    if (url !== undefined) window.open(url, '_blank', 'noreferrer')
+    returned('returned')
+    return () => {}
+  }
   const operations: AccountSectionInjected = {
     avatarFailed: (value) => { avatar.failed(value) },
     subscribeSessionExpired: listener => ctx.remote.$on('deepseek-account/session-expired', listener),

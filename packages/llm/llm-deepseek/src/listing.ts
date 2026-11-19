@@ -16,13 +16,20 @@ export const MAX_BADGE_TEXT_LENGTH = 12
 /** Code of a listing deadline's timeout reason; {@link requestModelListing} reports it as `TIMEOUT`. */
 export const LISTING_TIMEOUT = 'MODEL_LISTING_TIMEOUT'
 
+/** Endpoint types a gateway must declare before this build chats with one of its models. */
+const GATEWAY_ENDPOINT_TYPES = ['anthropic', 'openai'] as const
+
 /**
  * The listing endpoint of a Messages root.
+ * A version root (`/v1`, or none at all) lists beneath itself; a provider segment such as
+ * `/anthropic` belongs to Messages only, so its listing stays at the origin.
  * @param baseURL - Messages `baseURL`.
- * @returns `/models` at the origin of `baseURL`, the only origin that receives the route's credential.
+ * @returns `/models` at the only origin that receives the route's credential.
  */
 export function modelListingURL(baseURL: string): string {
-  return new URL('/models', new URL(baseURL).origin).href
+  const root = new URL(baseURL)
+  const path = root.pathname.replace(/\/+$/u, '')
+  return path === '' || path === '/v1' ? `${root.origin}/v1/models` : `${root.origin}/models`
 }
 
 /** The requirement one listing entry declares under this client's product token. */
@@ -63,6 +70,8 @@ export interface ListingEntry {
   readonly name?: string
   /** Requirement declared under `client_requirements[APP_IDENTITY.product]`. */
   readonly requirement: ClientRequirement
+  /** Whether the entry declared `api_capabilities`, which DeepSeek's own catalog always does. */
+  readonly selfDescribed: boolean
   /** Declared capabilities. */
   readonly capabilities: ListedCapabilities
   /**
@@ -78,6 +87,12 @@ export interface ModelListing {
   readonly entries: readonly ListingEntry[]
   /** Rows without a usable id, and repeated ids. */
   readonly skipped: number
+  /**
+   * Whether this listing came from an OpenAI-compatible gateway rather than DeepSeek's catalog:
+   * no entry declares `api_capabilities`, and every entry declares `supported_endpoint_types`.
+   * Such a listing is the authority on which models exist, so it is offered as listed.
+   */
+  readonly gateway: boolean
 }
 
 type Fields = Readonly<Record<string, unknown>>
@@ -169,9 +184,27 @@ function badgeOf(entry: Fields): ListedBadge | undefined {
   return { kind: 'badge', badge: { text, tone } }
 }
 
+/** Endpoint types one entry declares it is served by; `undefined` when the field is absent or unreadable. */
+function endpointTypes(entry: Fields): readonly unknown[] | undefined {
+  const declared = entry.supported_endpoint_types
+  return Array.isArray(declared) ? declared : undefined
+}
+
+/** Whether a gateway entry declares an endpoint type this build can chat over. */
+function gatewayServesChat(entry: Fields): boolean {
+  const served = endpointTypes(entry)
+  return served !== undefined && GATEWAY_ENDPOINT_TYPES.some(type => served.includes(type))
+}
+
 function capabilitiesOf(entry: Fields): ListedCapabilities {
   const messages = fieldsOf(fieldsOf(entry.api_capabilities)?.anthropic_messages)
-  if (messages === undefined) return { usable: false, reason: 'declares no api_capabilities.anthropic_messages' }
+  if (messages === undefined) {
+    // A gateway lists models without Messages capabilities and declares endpoint types instead;
+    // a declared chat endpoint is enough, and the entry inherits this build's limits.
+    return gatewayServesChat(entry)
+      ? { usable: true, facts: { inputModalities: ['text'] } }
+      : { usable: false, reason: 'declares no api_capabilities.anthropic_messages' }
+  }
   const outputs = entry.output_modalities === undefined ? ['text'] : knownModalities(entry.output_modalities)
   if (outputs?.includes('text') !== true) return { usable: false, reason: 'declares no text output' }
   const inputs = entry.input_modalities === undefined ? ['text' as const] : knownModalities(entry.input_modalities)
@@ -210,22 +243,26 @@ export function parseModelListing(body: unknown): ModelListing {
   const rows: readonly unknown[] = data
   const entries: ListingEntry[] = []
   const seen = new Set<string>()
+  let gatewayRows = 0
   for (const row of rows) {
     const entry = fieldsOf(row)
     const id = entry?.id
     if (entry === undefined || typeof id !== 'string' || id.length === 0 || seen.has(id)) continue
     seen.add(id)
     const badge = badgeOf(entry)
+    const selfDescribed = fieldsOf(fieldsOf(entry.api_capabilities)?.anthropic_messages) !== undefined
+    if (!selfDescribed && endpointTypes(entry) !== undefined) gatewayRows += 1
     entries.push({
       id,
       ...typeof entry.name === 'string' && entry.name.length > 0 ? { name: entry.name } : {},
       requirement: requirementOf(entry),
+      selfDescribed,
       capabilities: capabilitiesOf(entry),
       ...badge === undefined ? {} : { badge },
     })
   }
   if (entries.length === 0) throw new LlmError('DeepSeek model listing contains no model entry', 'INVALID_RESPONSE')
-  return { entries, skipped: rows.length - entries.length }
+  return { entries, skipped: rows.length - entries.length, gateway: gatewayRows === entries.length }
 }
 
 /**

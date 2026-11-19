@@ -53,6 +53,9 @@ async function host(origin: string, token: () => string | undefined = () => 'fix
   await ctx.plugin(LlmRuntime)
   ctx.provide('deepseekAccount', {
     resolveToken: (url: string) => Promise.resolve(new URL(url).origin === origin ? token() : undefined),
+    // The language key is bound to the deployment that minted it, exactly like the access token.
+    resolveLanguageKey: (url?: string) => Promise.resolve(
+      url === undefined || new URL(url).origin === origin ? token() : undefined),
   } as DeepSeekAccount)
   return ctx
 }
@@ -78,7 +81,9 @@ it('keeps discovery and disposal independent across the two credential routes', 
   expect(await ctx.llm.listModels('deepseek-account')).toEqual([])
   token = 'second-account-token'
   expect(await ctx.llm.listModels('deepseek-account')).toHaveLength(2)
-  expect(server.requests.map(request => request.headers['x-dsh-auth-token'])).toEqual(['fixture-account-token', 'second-account-token'])
+  expect(server.requests.map(request => request.headers.authorization)).toEqual([
+    'Bearer fixture-account-token', 'Bearer second-account-token',
+  ])
   await account.dispose()
   expect(ctx.llm.listProviders().map(row => row.id)).toEqual(['deepseek-official'])
   await official.dispose()
@@ -173,7 +178,7 @@ it('hides and refuses listed models this build cannot serve before any inference
 it('applies model overrides and reports stale ones on the provider directory until they resolve', async () => {
   let token = 'first-account'
   const server = await listing((request, response) => {
-    const rows = request.headers['x-dsh-auth-token'] === 'first-account' ? [FLASH] : [FLASH, { ...PRO, id: 'deepseek-v5', ...requires('0.0.1') }]
+    const rows = request.headers.authorization === 'Bearer first-account' ? [FLASH] : [FLASH, { ...PRO, id: 'deepseek-v5', ...requires('0.0.1') }]
     json({ data: rows })(request, response)
   })
   const ctx = await host(server.origin, () => token)

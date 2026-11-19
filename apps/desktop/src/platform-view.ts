@@ -61,6 +61,7 @@ export class DesktopPlatformView {
   setSession(next: PlatformSession | null): void {
     if (next?.token === this.account?.token && next?.origin === this.account?.origin
       && next?.embeddedPageDist === this.account?.embeddedPageDist
+      && next?.usagePath === this.account?.usagePath && next?.topUpPath === this.account?.topUpPath
       && JSON.stringify(next?.requestHeaders) === JSON.stringify(this.account?.requestHeaders)) {
       if (next?.userId === this.account?.userId || this.account?.userId === null) {
         this.account = next
@@ -171,7 +172,7 @@ export class DesktopPlatformView {
     owner.contentView.addChildView(view)
     view.setBounds(bounds)
     try {
-      const url = new URL(page === 'usage' ? '/usage' : '/top_up', account.origin)
+      const url = new URL(page === 'usage' ? account.usagePath ?? '/usage' : account.topUpPath ?? '/top_up', account.origin)
       if (account.embeddedPageDist) url.searchParams.set('dist', account.embeddedPageDist)
       await view.webContents.loadURL(url.href)
     } catch (error) {

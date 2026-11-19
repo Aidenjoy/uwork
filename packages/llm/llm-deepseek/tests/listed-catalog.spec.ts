@@ -25,6 +25,17 @@ const resolve = (rows: object[] | undefined, overrides: Record<string, ModelOver
   routeMaxTokens: 256_000,
   clientVersion: '0.2.0-rc.1',
 })
+const resolveGateway = (rows: object[]) => resolveListedCatalog({
+  listing: parseModelListing({ data: rows }).entries,
+  supported: resolveAdapterOptions({}).models,
+  overrides: {},
+  routeMaxTokens: 256_000,
+  clientVersion: '0.2.0-rc.1',
+  offerUnknownListed: parseModelListing({ data: rows }).gateway,
+})
+
+/** One gateway row: an OpenAI-compatible listing declares endpoint types, not Messages capabilities. */
+const gatewayRow = (id: string, ...endpoints: string[]) => ({ id, object: 'model', supported_endpoint_types: endpoints })
 
 describe('without a listing', () => {
   it('offers the bundled catalog', () => {
@@ -178,5 +189,28 @@ describe('with a listing', () => {
       expect.stringMatching(/^modelOverrides\.deepseek-v4-pro does not apply \(.*cannot declare image request limits/),
       'modelOverrides names "retired", which neither the model listing nor the built-in catalog describes',
     ])
+  })
+})
+
+describe('with a gateway listing', () => {
+  it('offers every listed model, including ids this build never shipped', () => {
+    const catalog = resolveGateway([gatewayRow('kimi-k3', 'openai'), gatewayRow('claude-sonnet-5', 'anthropic', 'openai')])
+    expect(catalog.offered.map(model => [model.id, model.inputModalities])).toEqual([
+      ['kimi-k3', ['text']], ['claude-sonnet-5', ['text']],
+    ])
+    expect(catalog.refusals.size).toBe(0)
+    expect(catalog.problems).toEqual([])
+  })
+
+  it('still hides an entry that declares no endpoint type this build chats over', () => {
+    const catalog = resolveGateway([gatewayRow('embed-3', 'embeddings')])
+    expect(catalog.offered).toEqual([])
+    expect(catalog.refusals.get('embed-3')).toEqual({ kind: 'unsupported' })
+  })
+
+  it('keeps an unknown listed id unsupported without the gateway flag', () => {
+    const catalog = resolve([gatewayRow('kimi-k3', 'openai')])
+    expect(catalog.offered).toEqual([])
+    expect(catalog.refusals.get('kimi-k3')).toEqual({ kind: 'unsupported' })
   })
 })

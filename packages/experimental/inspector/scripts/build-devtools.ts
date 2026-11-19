@@ -1,5 +1,5 @@
 /** Compile the fixed npm DevTools sources locally and publish the complete static frontend. */
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -36,14 +36,38 @@ async function compile(): Promise<{ files: number; bytes: number }> {
     }
     await walk('')
     const bytes = files.reduce((total, file) => total + file.bytes, 0)
+    const output = join(lib, 'devtools')
     await writeFile(join(temporary, 'resource-manifest.json'), `${JSON.stringify({
       source: 'chrome-devtools-frontend', version: DEVTOOLS_NPM_VERSION, revision: DEVTOOLS_SOURCE_REVISION,
       builder: 'vite',
       files: files.sort((left, right) => left.path.localeCompare(right.path)),
     }, null, 2)}\n`)
-    const output = join(lib, 'devtools')
-    await rm(output, { recursive: true, force: true })
-    await rename(temporary, output)
+    // Republishing an identical tree would still delete and recreate `lib/devtools`, and a
+    // concurrent `pnpm pack` walking it can observe a missing path even across two renames.
+    // The manifest pins every file's path, size, and digest, so an exact match is proof that
+    // the published tree is current and the swap can be skipped entirely.
+    const manifest = await readFile(join(temporary, 'resource-manifest.json'), 'utf8')
+    const published = await readFile(join(output, 'resource-manifest.json'), 'utf8').catch(() => undefined)
+    if (published === manifest) {
+      console.log(`DevTools npm ${DEVTOOLS_NPM_VERSION}: ${files.length} files unchanged`)
+      return { files: files.length, bytes }
+    }
+    // Swap the published tree without ever leaving `lib/devtools` absent: a concurrent
+    // `pnpm pack` enumerating `lib/devtools/**` must not observe a missing directory, and the
+    // slow recursive delete of the previous tree happens only after the new one is in place.
+    const retired = join(lib, `devtools.retire-${randomUUID()}`)
+    const hadPrevious = await rename(output, retired).then(() => true, (error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return false
+      throw error
+    })
+    try {
+      await rename(temporary, output)
+    } catch (error) {
+      // Restore the previous tree so a failed publish cannot leave the package without DevTools.
+      if (hadPrevious) await rename(retired, output).catch(() => {})
+      throw error
+    }
+    if (hadPrevious) await rm(retired, { recursive: true, force: true })
     console.log(`DevTools npm ${DEVTOOLS_NPM_VERSION}: ${files.length} files, ${bytes} bytes`)
     return { files: files.length, bytes }
   } finally {

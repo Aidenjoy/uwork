@@ -65,11 +65,11 @@ it('routes only notification APIs to Harness while account APIs and pages stay o
   ])
 })
 
-it('keeps private grants and embedded pages on Platform while allowing a notification origin override', async () => {
+it('keeps private grants and embedded pages on Platform while allowing a same-authority notification override', async () => {
   const rejected = await fixture('https://platform.deepseek.com', { platformOrigin: 'https://private.example' })
   expect(await rejected.getState()).toMatchObject({ status: 'signed-out' })
   const account = await fixture('https://private.example', {
-    platformOrigin: 'https://private.example', harnessOrigin: 'https://notifications.example',
+    platformOrigin: 'https://private.example', harnessOrigin: 'https://private.example',
     requestHeaders: { 'x-deployment': 'base' }, accountRequestHeaders: { 'x-account': 'account' },
   })
   expect(await account.getPlatformSession()).toMatchObject({
@@ -77,7 +77,7 @@ it('keeps private grants and embedded pages on Platform while allowing a notific
     requestHeaders: { 'x-deployment': 'base', 'x-account': 'account' },
   })
   const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-    expect(input).toBe('https://notifications.example/api/v0/users/notifications/list')
+    expect(input).toBe('https://private.example/api/v0/users/notifications/list')
     expect(init?.headers).toMatchObject({ 'x-deployment': 'base', 'x-account': 'account', 'x-dsh-auth-token': 'fixture-token' })
     return new Response(JSON.stringify({ code: 0, data: { biz_code: 0, biz_data: { notifications: [], next_poll_after: 600 } } }))
   })
@@ -85,8 +85,38 @@ it('keeps private grants and embedded pages on Platform while allowing a notific
   expect(fetcher).toHaveBeenCalledOnce()
 })
 
+it('withholds notifications from an authority that did not mint the grant', async () => {
+  // DeepSeek's harness answers any token it did not issue with 40003; asking from a deployment that
+  // signs in elsewhere would turn a foreign rejection into a sign-out, so the call is skipped.
+  const account = await fixture('https://private.example', {
+    platformOrigin: 'https://private.example', harnessOrigin: 'https://notifications.example',
+  })
+  const id = 'f487920c-a8d5-59b6-90f0-b787adc97980' as AccountNotificationId
+  const fetcher = vi.spyOn(globalThis, 'fetch')
+  const client = { version: 'test', locale: 'en', timezoneOffsetSeconds: 0 }
+  expect(await account.getNotifications(client)).toBeNull()
+  expect(await account.getNotificationContent(id, client)).toBeNull()
+  expect(await account.reportNotificationEvent(id, 'dismissed', client)).toBe(false)
+  expect(fetcher).not.toHaveBeenCalled()
+  // Withholding is not a verdict on the grant: the stored credential survives untouched.
+  expect(await account.getState()).toMatchObject({ status: 'credential-stored' })
+})
+
 it.each(['http://remote.example', 'https://notifications.example/path'])(
   'rejects the invalid notification origin %s during initialization', async (harnessOrigin) => {
     await expect(fixture('https://platform.deepseek.com', { harnessOrigin })).rejects.toThrow('harnessOrigin')
   },
 )
+
+it('gates off DeepSeek profile/balance/logout requests on gateway deployments', async () => {
+  const account = await fixture('http://10.1.2.3:3000', {
+    platformOrigin: 'http://10.1.2.3:3000', allowLoopbackHttp: true, platformAccountApis: false,
+  })
+  const fetcher = vi.spyOn(globalThis, 'fetch')
+  const client = { version: 'test', locale: 'en', timezoneOffsetSeconds: 0 }
+  expect(await account.getProfile(client)).toEqual({ status: 'failed' })
+  expect(await account.getBalance(client)).toEqual({ status: 'failed' })
+  // Signed-in state survives the failed account reads; no DeepSeek endpoint is contacted.
+  expect(await account.getState()).toMatchObject({ status: 'credential-stored' })
+  expect(fetcher).not.toHaveBeenCalled()
+})

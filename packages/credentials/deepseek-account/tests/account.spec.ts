@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto'
 import { afterEach, expect, it, vi } from 'vitest'
 import { Context, Service } from '@deepseek-ai/cordis'
 import { mkdtemp, rm, readFile } from 'node:fs/promises'
@@ -13,7 +12,7 @@ import type { AccountClientMetadata } from '@deepseek-ai/dsh-deepseek-account'
 import { LocalCredentialProvider } from '@deepseek-ai/dsh-credentials-local'
 import { credentialKey, credentialRef } from '@deepseek-ai/dsh-credentials'
 import { DeepSeekAccount } from '../src/index.ts'
-import { browserUrl, platformHeaders, platformOrigin, loginOrigin } from '../src/protocol.ts'
+import { DESKTOP_CALLBACK_PATH, isPrivateHttpHost, platformHeaders, platformOrigin, loginOrigin } from '../src/protocol.ts'
 
 const cleanups: Array<() => Promise<unknown>> = []
 afterEach(async () => {
@@ -29,13 +28,14 @@ async function fixture(
     email: 't***@example.invalid', mobile: '138****5678',
   },
   requestHeaders: Record<string, string> = {},
-  rewriteBrowserOrigin = false,
   accountRequestHeaders: Record<string, string> = {},
   inferenceOrigin = 'https://api.deepseek.com',
   beforeAccount?: (ctx: Context, origin: string) => Promise<void>,
   embeddedPageDist = '',
   desktopPlatform: 'darwin' | 'win32' | null = null,
   balanceTimeoutMs = 30_000,
+  pagePaths: { usagePath?: string; topUpPath?: string } = {},
+  extraConfig: Record<string, unknown> = {},
 ) {
   const home = await mkdtemp(join(tmpdir(), 'dsh-account-'))
   cleanups.push(() => rm(home, { recursive: true, force: true }))
@@ -49,7 +49,6 @@ async function fixture(
   let hold = false
   let count = 0
   let businessCode = 0
-  let exchangeOverride: Record<string, unknown> = {}
   let initOverride: Record<string, unknown> = {}
   let onInit = () => {}
   let origin = ''
@@ -58,6 +57,11 @@ async function fixture(
   let detailCode = 0
   let detailStatus = 200
   let profileFailed = false
+  /** utoken desktop exchange: 43-character access token, long-lived language key, optional snapshot. */
+  let accessToken = 'A'.repeat(43)
+  let desktopUser: Record<string, unknown> | undefined
+  let tokenOverride: Record<string, unknown> = {}
+  const tokenRequests: string[] = []
 
   let summaryFailed = false
   let logoutFailed = false
@@ -114,6 +118,25 @@ async function fixture(
       } }))
       return
     }
+    // utoken answers the desktop code exchange with plain JSON, not the platform envelope.
+    if (req.url === '/api/desktop-auth/token') {
+      let form = ''
+      for await (const chunk of req) form += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk)
+      tokenRequests.push(form)
+      count++
+      exchanged.resolve(undefined)
+      if (hold) await release.promise
+      res.setHeader('content-type', 'application/json')
+      res.end(JSON.stringify({
+        access_token: accessToken,
+        token_type: 'Bearer',
+        expires_in: 600,
+        language_api_key: 'sk-test-language-key',
+        ...(desktopUser === undefined ? {} : { user: desktopUser }),
+        ...tokenOverride,
+      }))
+      return
+    }
     req.setEncoding('utf8')
     let text = ''
     for await (const chunk of req) {
@@ -130,12 +153,12 @@ async function fixture(
     } else if (req.url?.endsWith('auth_init')) {
       init = body
       onInit()
-      value = { authorize_url: `${rewriteBrowserOrigin ? 'https://platform.deepseek.com' : origin}/dsh/authorize?authorize_id=test`, expires_in: 600, authorize_id: 'test', ...initOverride }
+      value = { authorize_url: `${origin}/dsh/authorize?authorize_id=test`, expires_in: 600, authorize_id: 'test', ...initOverride }
     } else {
       count++
       exchanged.resolve(undefined)
       if (hold) await release.promise
-      value = { user: null, token: 'dsh_mock_test', authorized_url: `${origin}/dsh/authorized?result=test&locale=zh_CN`, ...exchangeOverride }
+      value = { user: null, token: 'dsh_mock_test', authorized_url: `${origin}/dsh/authorized?result=test&locale=zh_CN` }
     }
     res.setHeader('content-type', 'application/json')
     res.end(JSON.stringify({ code: 0, data: { biz_code: businessCode, biz_msg: 'sensitive diagnostic', biz_data: value } }))
@@ -161,15 +184,29 @@ async function fixture(
   const provider = ctx.plugin(DeepSeekAccount, {
     platformOrigin: origin, inferenceOrigin, embeddedPageDist, desktopPlatform,
     allowLoopbackHttp: true, requestHeaders, accountRequestHeaders,
-    rewriteBrowserOrigin, logoutRetryDelayMs: 1, balanceTimeoutMs,
+    logoutRetryDelayMs: 1, balanceTimeoutMs,
+    ...pagePaths,
+    ...extraConfig,
   })
   await provider
   cleanups.push(async () => { await provider.dispose(); await authorization.dispose(); await credentials.dispose(); await web.dispose() })
   const account = ctx.deepseekAccount
   const states = new AbortController()
   cleanups.push(async () => { states.abort() })
+  /** CSRF state of the current attempt; the callback route matches on it instead of the Host header. */
+  let currentState: string | undefined
   async function wait(phase: string) {
-    for await (const { state } of account.watch(states.signal)) if (state.attempt?.phase === phase) return state
+    for await (const { state } of account.watch(states.signal)) {
+      const authorizeUrl = state.attempt?.authorizeUrl
+      if (authorizeUrl !== undefined) {
+        try {
+          currentState = new URL(authorizeUrl).searchParams.get('state') ?? currentState
+        } catch {
+          // A malformed authorize URL is the subject of its own assertion.
+        }
+      }
+      if (state.attempt?.phase === phase) return state
+    }
     throw new Error(`missing phase ${phase}`)
   }
   return { cancellations, cancellationReceived, holdCancel: () => { holdCancel = true },
@@ -190,9 +227,14 @@ async function fixture(
     initResponse: (value: Record<string, unknown>) => { initOverride = value },
     onInit: (callback: () => void) => { onInit = callback },
     bonusWallets: (value: unknown) => { bonusWallets = value },
-    exchangeResponse: (value: Record<string, unknown>) => { exchangeOverride = value },
+    /** Override the desktop token payload; `null` makes the exchange answer a protocol violation. */
+    exchangeResponse: (value: Record<string, unknown> | null) => { tokenOverride = value === null ? { access_token: 'short' } : value },
+    setAccessToken: (value: string) => { accessToken = value },
+    setDesktopUser: (value: Record<string, unknown> | undefined) => { desktopUser = value },
+    tokenRequests: () => tokenRequests,
     fail: (value: number) => { businessCode = value },
-    init: () => init, count: () => count, callback: (state = init.state) => `${init.redirect_uri}?code=test&state=${state}` }
+    init: () => init, count: () => count,
+    callback: (state: string | undefined = currentState) => `${callbackOrigin}${DESKTOP_CALLBACK_PATH}?code=test&state=${state ?? ''}` }
 }
 
 it('accepts the cross-site OAuth return without relaxing other anonymous routes', async () => {
@@ -209,27 +251,19 @@ it('accepts the cross-site OAuth return without relaxing other anonymous routes'
   expect((await fetch(f.callback('wrong'), { headers })).status).toBe(400)
   expect(f.count()).toBe(0)
   const response = await fetch(f.callback(), { headers, redirect: 'manual' })
-  expect(response.status).toBe(302)
+  // The return tab is answered in place: the desktop exchange has no post-authorization page.
+  expect(response.status).toBe(200)
+  expect(await response.text()).toContain('Signed in')
   expect(response.headers.get('cache-control')).toBe('no-store')
   expect(f.count()).toBe(1)
   expect((await f.account.getState()).status).toBe('credential-stored')
 })
 
-it('leaves the attempt unconsumed on a different Host or HTTP listener', async () => {
+it('consumes the callback by CSRF state rather than the Host header', async () => {
   const f = await fixture()
   const connection = f.ctx.plugin(Connection)
   await connection.await()
   cleanups.push(async () => { await connection.dispose() })
-  const isolated = f.ctx.isolate('webServer')
-  const other = isolated.plugin(WebServer, { host: '127.0.0.1', port: 0 })
-  await other.await()
-  cleanups.push(async () => { await other.dispose() })
-  const handled = vi.fn()
-  const remove = isolated.webServer.register({ kind: 'exact', path: '/oauth/callback', auth: 'anonymous', handler: (_req, res) => {
-    handled()
-    res.writeHead(204).end()
-  } })
-  cleanups.push(async () => { remove() })
   await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'web')
   await f.wait('waiting-browser')
   const callback = new URL(f.callback())
@@ -243,54 +277,22 @@ it('leaves the attempt unconsumed on a different Host or HTTP listener', async (
     request.on('error', reject)
     request.end()
   })
-  expect(await requestStatus(callback, { ...crossSite, host: 'untrusted.invalid' })).toBe(404)
-  expect(await requestStatus(new URL(callback.pathname + callback.search, isolated.webServer.getOrigin()), {
-    host: callback.host,
-  })).toBe(204)
-  expect(handled).toHaveBeenCalledOnce()
-  expect(f.count()).toBe(0)
-  expect((await f.account.getState()).attempt?.phase).toBe('waiting-browser')
-  const accepted = await fetch(f.callback(), { headers: crossSite, redirect: 'manual' })
-  expect(accepted.status).toBe(302)
+  // A port forward or a loopback host spelling must not detach a login...
+  expect(await requestStatus(callback, { ...crossSite, host: `localhost:${callback.port}` })).toBe(200)
   expect(f.count()).toBe(1)
+  expect((await f.account.getState()).status).toBe('credential-stored')
+  // ...while a state that does not belong to the attempt is refused without touching the exchange.
+  await f.account.signOut(clientMetadata())
+  await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'web')
+  await f.wait('waiting-browser')
+  expect(await requestStatus(new URL(f.callback('wrong')), crossSite)).toBe(400)
+  expect(f.count()).toBe(1)
+  await f.account.cancelSignIn((await f.account.getState()).attempt!.id)
 })
 
-it.each([
-  { serverTtl: 600, expectedRemaining: 480_000 },
-  { serverTtl: 60, expectedRemaining: 60_000 },
-])('preserves the total sign-in deadline with a $serverTtl second server TTL', async ({ serverTtl, expectedRemaining }) => {
-  const f = await fixture()
-  const startedAt = 1_000_000
-  // Only the wall clock is fake; loopback transport and resource teardown retain real timers.
-  vi.useFakeTimers({ toFake: ['Date'] })
-  try {
-    vi.setSystemTime(startedAt)
-    f.onInit(() => { vi.setSystemTime(startedAt + 120_000) })
-    f.initResponse({ expires_in: serverTtl })
-    await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'desktop')
-    const state = await f.wait('waiting-browser')
-    expect(state.attempt?.expiresAt).toBe(startedAt + 120_000 + expectedRemaining)
-    await f.account.cancelSignIn(state.attempt!.id)
-  } finally { vi.useRealTimers() }
-})
-
-it('rejects initialization that completes after the total sign-in deadline', async () => {
-  const f = await fixture()
-  const startedAt = 1_000_000
-  vi.useFakeTimers({ toFake: ['Date'] })
-  try {
-    vi.setSystemTime(startedAt)
-    f.onInit(() => { vi.setSystemTime(startedAt + 600_000) })
-    await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'desktop')
-    const state = await f.wait('expired')
-    expect(state.status).toBe('signed-out')
-    expect(state.attempt?.errorCode).toBe('expired')
-    expect(state.attempt?.authorizeUrl).toBeUndefined()
-    expect(f.count()).toBe(0)
-    await f.cancellationReceived.promise
-    expect(f.cancellations).toHaveLength(1)
-  } finally { vi.useRealTimers() }
-})
+// The desktop authorization server signs the URL locally: there is no `auth_init` round-trip, so the
+// former server-TTL and initialization-deadline cases no longer describe this flow. The attempt
+// deadline itself is covered by the exchange-arrives-late case below.
 
 it('does not store an exchange result received after the sign-in deadline', async () => {
   const f = await fixture()
@@ -312,27 +314,33 @@ it('does not store an exchange result received after the sign-in deadline', asyn
   } finally { vi.useRealTimers() }
 })
 
-it('stores a grant before redirecting, restores account presence, and signs out without deleting device identity', async () => {
+it('stores both credentials before answering, restores account presence, and clears them on sign-out', async () => {
   const f = await fixture()
   await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'desktop')
   await f.wait('waiting-browser')
   expect((await fetch(f.callback('wrong'))).status).toBe(400)
   const response = await fetch(f.callback(), { redirect: 'manual' })
-  expect(response.status).toBe(302)
-  expect(f.init().login_source).toBe('desktop')
-  expect(f.init()).not.toHaveProperty('client_type')
-  expect(response.headers.get('location')).toBe(`${f.origin}/dsh/authorized?result=test&locale=zh_CN&login_source=desktop`)
+  expect(response.status).toBe(200)
   expect((await f.account.getState()).status).toBe('credential-stored')
-  expect(await readFile(join(f.home, 'credentials.yaml'), 'utf8')).toContain('dsh_mock_test')
+  const stored = await readFile(join(f.home, 'credentials.yaml'), 'utf8')
+  expect(stored).toContain('A'.repeat(43))
   // The Host publishes identity from a separate profile read; the snapshot only reuses it.
   await f.account.getProfile(clientMetadata())
-  expect(await f.account.getPlatformSession()).toEqual({ origin: f.origin, userId: 'test-user', token: 'dsh_mock_test',
-    requestHeaders: {} })
+  expect(await f.account.getPlatformSession()).toEqual({ origin: f.origin, userId: 'test-user', token: 'A'.repeat(43),
+    usagePath: '/usage', topUpPath: '/top_up', requestHeaders: {} })
   expect(await f.account.resolveToken('https://api.deepseek.com')).toBeUndefined()
+  // The language key is the model credential, kept apart from the 10-minute access token, and it is
+  // bound to the configured inference origin rather than to the authorization origin.
+  expect(await f.account.resolveLanguageKey()).toBe('sk-test-language-key')
+  expect(await f.account.resolveLanguageKey('https://api.deepseek.com/v1')).toBe('sk-test-language-key')
+  expect(await f.account.resolveLanguageKey(f.origin)).toBeUndefined()
   await f.account.signOut(clientMetadata())
   expect((await f.account.getState()).status).toBe('signed-out')
   expect(await f.account.getPlatformSession()).toBeNull()
-  expect((await f.ctx.credentials.describeRecord(credentialKey('deepseek-account-platform', 'device'))).configured).toBe(true)
+  expect(await f.account.resolveLanguageKey()).toBeUndefined()
+  for (const name of ['default', 'speech', 'profile']) {
+    expect((await f.ctx.credentials.describeRecord(credentialKey('deepseek-account-platform', name))).configured).toBe(false)
+  }
 })
 
 it('does not persist a delayed exchange after cancellation or replace the next attempt', async () => {
@@ -371,63 +379,32 @@ it('restricts platform destinations to the configured origin and route', () => {
   expect(() => platformOrigin('http://localhost:8081', false, 'platformOrigin')).toThrow()
   expect(platformOrigin('http://localhost:8081', true, 'platformOrigin')).toBe('http://localhost:8081')
   expect(() => platformOrigin('http://example.com', true, 'platformOrigin')).toThrow()
-  expect(() => browserUrl('https://evil.test/dsh/authorized', 'https://platform.deepseek.com', '/dsh/authorized')).toThrow()
-  expect(() => browserUrl('https://platform.deepseek.com/other', 'https://platform.deepseek.com', '/dsh/authorized')).toThrow()
+  expect(platformOrigin('http://10.1.2.3:3000', true, 'platformOrigin')).toBe('http://10.1.2.3:3000')
+  // A public host that merely starts with a private prefix is not an intranet address.
+  for (const host of ['http://10.1.2.3.example.com', 'http://10.0.0.1.example.com', 'http://172.16.0.9.example.com']) {
+    expect(() => platformOrigin(host, true, 'platformOrigin')).toThrow('platformOrigin')
+  }
+  expect(isPrivateHttpHost('192.168.1.1')).toBe(true)
+  expect(isPrivateHttpHost('172.31.255.255')).toBe(true)
+  expect(isPrivateHttpHost('172.32.0.1')).toBe(false)
+  expect(isPrivateHttpHost('8.8.8.8')).toBe(false)
 })
 
-it('maps both returned browser pages to the development origin across the login flow', async () => {
-  const f = await fixture(undefined, {}, true)
-  f.exchangeResponse({ authorized_url: 'https://platform.deepseek.com/dsh/authorized?result=a%2Fb&locale=zh_CN' })
-  await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'desktop')
-  expect((await f.wait('waiting-browser')).attempt?.authorizeUrl).toBe(`${f.origin}/dsh/authorize?authorize_id=test`)
-  const response = await fetch(f.callback(), { redirect: 'manual' })
-  expect(response.status).toBe(302)
-  expect(response.headers.get('location')).toBe(`${f.origin}/dsh/authorized?result=a%2Fb&locale=zh_CN&login_source=desktop`)
-  expect((await f.account.getState()).status).toBe('credential-stored')
-})
+// The desktop authorization server answers the return tab in place and has no `authorized_url`
+// completion page, so the former completion-URL, `login_source` and `client_type` cases no longer
+// describe this flow.
 
-it.each([
-  ['web', ''],
-  ['desktop', ''],
-  ['web', '&login_source=desktop&login_source=desktop'],
-  ['desktop', '&login_source=web&login_source=web'],
-] as const)('redirects the %s login completion with its login source when Platform returns %s', async (client, query) => {
+it('answers a malformed token payload as a protocol failure without exposing backend text', async () => {
   const f = await fixture()
-  f.exchangeResponse({ authorized_url: `${f.origin}/dsh/authorized?result=a%2Fb&locale=zh_CN${query}` })
-  await f.account.startSignIn(clientMetadata(), f.callbackOrigin, client)
-  await f.wait('waiting-browser')
-  const response = await fetch(f.callback(), { redirect: 'manual' })
-  expect(response.status).toBe(302)
-  expect(response.headers.get('location')).toBe(`${f.origin}/dsh/authorized?result=a%2Fb&locale=zh_CN&login_source=${client}`)
-})
-
-it('preserves Platform business client_type in the completion URL', async () => {
-  const f = await fixture()
-  f.exchangeResponse({ authorized_url: `${f.origin}/dsh/authorized?client_type=DSH` })
-  await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'web')
-  await f.wait('waiting-browser')
-  const response = await fetch(f.callback(), { redirect: 'manual' })
-  expect(response.headers.get('location')).toBe(`${f.origin}/dsh/authorized?client_type=DSH&login_source=web`)
-})
-
-it.each([undefined, 'https://other.example/dsh/authorized', '/dsh/authorized'])('rejects an invalid exchange completion URL %s before storing a token', async (authorizedUrl) => {
-  const f = await fixture()
-  f.exchangeResponse({ authorized_url: authorizedUrl })
+  // A 15-character access token fails the response schema after a successful HTTP round trip.
+  f.exchangeResponse(null)
   await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'desktop')
   await f.wait('waiting-browser')
-  const response = await fetch(f.callback(), { redirect: 'manual' })
-  expect(response.status).toBe(204)
-  expect((await f.wait('failed')).status).toBe('signed-out')
-  expect((await f.ctx.credentials.describeRecord(credentialKey('deepseek-account-platform', 'default'))).configured).toBe(false)
-})
-
-it.each([2, 17])('uses the generic failure for business code %s without guessing product behavior or exposing backend text', async (code) => {
-  const f = await fixture()
-  f.fail(code)
-  await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'desktop')
+  expect((await fetch(f.callback(), { redirect: 'manual' })).status).toBe(204)
   const state = await f.wait('failed')
   expect(state).toMatchObject({ status: 'signed-out', attempt: { phase: 'failed', errorCode: 'protocol' } })
   expect(JSON.stringify(state)).not.toContain('sensitive diagnostic')
+  expect((await f.ctx.credentials.describeRecord(credentialKey('deepseek-account-platform', 'default'))).configured).toBe(false)
 })
 
 
@@ -443,11 +420,38 @@ it('removes its callback route without closing the shared server on disposal', a
 })
 
 
-it('derives every portal link from the private platform origin', async () => {
+it('derives every portal link and the authorization URL from the private platform origin', async () => {
   const f = await fixture()
   expect((await f.account.getState()).links).toEqual({ usageUrl: `${f.origin}/usage`, topUpUrl: `${f.origin}/top_up` })
   await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'desktop')
-  expect((await f.wait('waiting-browser')).attempt?.authorizeUrl).toBe(`${f.origin}/dsh/authorize?authorize_id=test`)
+  const authorizeUrl = new URL((await f.wait('waiting-browser')).attempt!.authorizeUrl!)
+  expect(authorizeUrl.origin).toBe(f.origin)
+  expect(authorizeUrl.pathname).toBe('/api/desktop-auth/authorize')
+  expect(Object.fromEntries(authorizeUrl.searchParams)).toMatchObject({
+    response_type: 'code', client_id: 'yun-token-desktop',
+    redirect_uri: `${f.callbackOrigin}${DESKTOP_CALLBACK_PATH}`, code_challenge_method: 'S256',
+  })
+  expect(authorizeUrl.searchParams.get('state')).toMatch(/^[\w-]{43}$/u)
+  expect(authorizeUrl.searchParams.get('code_challenge')).toMatch(/^[\w-]{43}$/u)
+  await f.account.cancelSignIn((await f.account.getState()).attempt!.id)
+})
+
+it('points the usage and top-up entries at the deployment console routes', async () => {
+  // A gateway such as utoken serves neither official path, so both links and the private session
+  // the Desktop embedded view loads come from configuration.
+  const f = await fixture(undefined, {}, {}, undefined, undefined, '', null, 30_000,
+    { usagePath: '/usage-logs', topUpPath: '/wallet' })
+  expect((await f.account.getState()).links).toEqual({
+    usageUrl: `${f.origin}/usage-logs`, topUpUrl: `${f.origin}/wallet` })
+  await storeAccount(f)
+  expect(await f.account.getPlatformSession()).toMatchObject({ usagePath: '/usage-logs', topUpPath: '/wallet' })
+})
+
+it('refuses a page destination that leaves the platform origin', async () => {
+  await expect(fixture(undefined, {}, {}, undefined, undefined, '', null, 30_000,
+    { usagePath: 'https://elsewhere.invalid/usage' })).rejects.toThrow('account: usagePath')
+  await expect(fixture(undefined, {}, {}, undefined, undefined, '', null, 30_000,
+    { topUpPath: '//elsewhere.invalid/wallet' })).rejects.toThrow('account: topUpPath')
 })
 
 async function storeAccount(f: Awaited<ReturnType<typeof fixture>>) {
@@ -592,27 +596,30 @@ it('bounds failed logout retries without restoring the grant or deleting a new l
   expect(await readDetails(f.account)).toBeNull()
   await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'desktop')
   await f.wait('waiting-browser')
-  f.exchangeResponse({ token: 'new-account-token' })
+  f.setAccessToken('N'.repeat(43))
   await fetch(f.callback(), { redirect: 'manual' })
   await expect.poll(f.logoutCount).toBe(6)
   expect(f.logoutHeaders).toEqual(Array<string>(6).fill('test-platform-grant'))
   expect((await f.account.getState()).status).toBe('credential-stored')
   expect(await f.ctx.credentials.readRecord(credentialKey('deepseek-account-platform', 'default')))
-    .toMatchObject({ kind: 'grant', payload: { token: 'new-account-token' } })
+    .toMatchObject({ kind: 'grant', payload: { token: 'N'.repeat(43) } })
 })
 
-it.each([['en', 'en_US'], ['zh-CN', 'zh_CN']])('passes %s to Platform and keeps the active attempt language', async (locale, platformLocale) => {
-  const f = await fixture()
-  await f.account.startSignIn(clientMetadata(locale), f.callbackOrigin, 'desktop')
-  const first = await f.wait('waiting-browser')
-  expect(f.init().locale).toBe(platformLocale)
-  expect((await f.account.startSignIn(clientMetadata('zh'), f.callbackOrigin, 'desktop')).attempt?.id).toBe(first.attempt?.id)
-  expect(f.init().locale).toBe(platformLocale)
-  await f.account.cancelSignIn(first.attempt!.id)
-  await f.account.startSignIn(clientMetadata('zh'), f.callbackOrigin, 'desktop')
-  await f.wait('waiting-browser')
-  expect(f.init().locale).toBe('zh_CN')
-})
+it.each([['en', 'en', 'Signed in'], ['zh-CN', 'zh-CN', '登录成功']])(
+  'carries %s into the return page and keeps the language of the attempt it joined', async (locale, lang, copy) => {
+    const f = await fixture()
+    await f.account.startSignIn(clientMetadata(locale), f.callbackOrigin, 'desktop')
+    const first = await f.wait('waiting-browser')
+    expect((await f.account.startSignIn(clientMetadata('zh'), f.callbackOrigin, 'desktop')).attempt?.id).toBe(first.attempt?.id)
+    const page = await (await fetch(f.callback(), { redirect: 'manual' })).text()
+    expect(page).toContain(`lang="${lang}"`)
+    expect(page).toContain(copy)
+    // A fresh attempt after sign-out takes the language of that call instead.
+    await f.account.signOut(clientMetadata())
+    await f.account.startSignIn(clientMetadata('zh'), f.callbackOrigin, 'desktop')
+    await f.wait('waiting-browser')
+    expect(await (await fetch(f.callback(), { redirect: 'manual' })).text()).toContain('lang="zh-CN"')
+  })
 
 it('adds private deployment cookies to every Platform request without exposing them in account state', async () => {
   const f = await fixture(undefined, { Cookie: 'test_gate=synthetic' })
@@ -625,13 +632,13 @@ it('adds private deployment cookies to every Platform request without exposing t
   await expect.poll(f.logoutCount).toBe(1)
   const headers = f.receivedHeaders
   const paths = headers.map(item => item.path)
-  // The profile and wallet queries are independent requests, so their arrival order is scheduler-dependent.
-  expect(paths.slice(0, 2)).toEqual(['/auth-api/v0/dsh/auth_init', '/auth-api/v0/dsh/auth_exchange'])
-  expect(paths.slice(2, -1).sort()).toEqual(['/api/v0/users/get_user_summary', '/auth-api/v0/users/current'])
+  // The desktop exchange comes first; the profile and wallet queries then arrive in scheduler order.
+  expect(paths.slice(0, 1)).toEqual(['/api/desktop-auth/token'])
+  expect(paths.slice(1, -1).sort()).toEqual(['/api/v0/users/get_user_summary', '/auth-api/v0/users/current'])
   expect(paths.at(-1)).toBe('/auth-api/v0/users/logout')
   expect(headers.every(item => item.cookie === 'test_gate=synthetic')).toBe(true)
   const grantedPaths = new Set(['/auth-api/v0/users/current', '/api/v0/users/get_user_summary', '/auth-api/v0/users/logout'])
-  expect(headers.filter(item => grantedPaths.has(item.path ?? '')).every(item => item.authorization === 'dsh_mock_test')).toBe(true)
+  expect(headers.filter(item => grantedPaths.has(item.path ?? '')).every(item => item.authorization === 'A'.repeat(43))).toBe(true)
   expect(headers.filter(item => !grantedPaths.has(item.path ?? '')).every(item => item.authorization === undefined)).toBe(true)
 })
 
@@ -650,8 +657,10 @@ it('does not forward deployment cookies through a Platform redirect', async () =
   const f = await fixture(undefined, { Cookie: 'test_gate=synthetic' })
   f.redirect()
   await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'desktop')
+  await f.wait('waiting-browser')
+  await fetch(f.callback(), { redirect: 'manual' })
   await f.wait('failed')
-  expect(f.receivedHeaders.map(item => item.path)).toEqual(['/auth-api/v0/dsh/auth_init'])
+  expect(f.receivedHeaders.map(item => item.path)).toEqual(['/api/desktop-auth/token'])
 })
 
 it('closes the failed Web authorization tab without redirecting and keeps the shared HTTP server alive', async () => {
@@ -660,8 +669,8 @@ it('closes the failed Web authorization tab without redirecting and keeps the sh
   cleanups.push(async () => { dispose() })
   await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'web')
   await f.wait('waiting-browser')
-  expect(new URL(f.init().redirect_uri!).origin).toBe(f.callbackOrigin)
-  f.fail(17)
+  // A token response that fails the schema is a protocol failure, answered by the failure page.
+  f.exchangeResponse(null)
   const response = await fetch(f.callback(), { redirect: 'manual' })
   expect(response.status).toBe(200)
   expect(response.headers.get('location')).toBeNull()
@@ -671,15 +680,14 @@ it('closes the failed Web authorization tab without redirecting and keeps the sh
   expect(response.headers.get('content-security-policy')).toContain(`script-src 'nonce-${nonce}'`)
   await expect(`${page.match(/<p>(.*?)<\/p>/)![1]}\n`)
     .toMatchFileSnapshot('./expected/web-exchange-failure.txt')
-  expect(f.init().login_source).toBe('web')
   expect(await f.wait('failed')).toMatchObject({ status: 'signed-out', attempt: { errorCode: 'protocol' } })
   expect(f.count()).toBe(1)
   expect(await (await fetch(`${f.callbackOrigin}/health`)).text()).toBe('alive')
-  f.fail(0)
+  f.exchangeResponse({})
   await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'web')
   await f.wait('waiting-browser')
   const success = await fetch(f.callback(), { redirect: 'manual' })
-  expect(success.headers.get('location')).toBe(`${f.origin}/dsh/authorized?result=test&locale=zh_CN&login_source=web`)
+  expect(success.status).toBe(200)
   expect(f.count()).toBe(2)
 })
 
@@ -707,10 +715,13 @@ it('completes login through a local TCP forward using the browser port rather th
   const forwardedOrigin = `http://127.0.0.1:${address.port}`
   expect(forwardedOrigin).not.toBe(f.callbackOrigin)
   await f.account.startSignIn(clientMetadata(), forwardedOrigin, 'web')
-  await f.wait('waiting-browser')
-  expect(f.init().redirect_uri).toBe(`${forwardedOrigin}/oauth/callback`)
-  const response = await fetch(f.callback(), { redirect: 'manual' })
-  expect(response.headers.get('location')).toBe(`${f.origin}/dsh/authorized?result=test&locale=zh_CN&login_source=web`)
+  const state = await f.wait('waiting-browser')
+  const authorizeUrl = new URL(state.attempt!.authorizeUrl!)
+  expect(authorizeUrl.searchParams.get('redirect_uri')).toBe(`${forwardedOrigin}${DESKTOP_CALLBACK_PATH}`)
+  // The return arrives through the forwarded origin; the state, not the Host header, decides.
+  const response = await fetch(`${forwardedOrigin}${DESKTOP_CALLBACK_PATH}?code=test&state=${authorizeUrl.searchParams.get('state')}`,
+    { redirect: 'manual' })
+  expect(response.status).toBe(200)
   expect((await f.account.getState()).status).toBe('credential-stored')
 })
 
@@ -722,6 +733,7 @@ it('keeps cancellation authoritative without reopening WebUI after a delayed exc
   const response = fetch(f.callback(), { redirect: 'manual' })
   await f.exchanged.promise
   await f.account.cancelSignIn(state.attempt!.id)
+  // A cancelled attempt closes its return tab without a page of its own.
   expect((await response).status).toBe(204)
   f.release.resolve(undefined)
   expect(await f.account.getState()).toMatchObject({ status: 'signed-out', attempt: { phase: 'cancelled' } })
@@ -733,7 +745,8 @@ it.each(['https://example.com', 'http://example.com', 'http://127.0.0.1.evil.tes
 ('rejects unsupported callback origin %s before starting authorization', async (origin) => {
   const f = await fixture()
   await expect(f.account.startSignIn(clientMetadata(), origin, 'web')).rejects.toThrow('account: protocol')
-  expect(f.init()).toEqual({})
+  expect((await f.account.getState()).attempt).toBeNull()
+  expect(f.count()).toBe(0)
 })
 
 it('normalizes supported loopback callback origins', () => {
@@ -743,34 +756,9 @@ it('normalizes supported loopback callback origins', () => {
   expect(loginOrigin('http://localhost:80')).toBe('http://localhost:80')
 })
 
-it('cancels remotely with the original PKCE verifier without waiting for acknowledgment', async () => {
-  const f = await fixture()
-  f.holdCancel()
-  await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'web')
-  const state = await f.wait('waiting-browser')
-  expect((await f.account.cancelSignIn(state.attempt!.id)).attempt?.phase).toBe('cancelled')
-  await f.cancellationReceived.promise
-  expect(f.cancellations).toHaveLength(1)
-  const body = f.cancellations[0]!
-  expect(Object.keys(body).sort()).toEqual(['authorize_id', 'code_verifier'])
-  expect(body.authorize_id).toBe('test')
-  expect(createHash('sha256').update(body.code_verifier!).digest('base64url')).toBe(f.init().code_challenge)
-  expect(f.receivedHeaders.find(row => row.path?.endsWith('auth_cancel'))?.authorization).toBeUndefined()
-  await f.account.cancelSignIn(state.attempt!.id)
-  expect(f.cancellations).toHaveLength(1)
-  f.fail(1)
-  f.release.resolve(undefined)
-  expect(await f.account.getState()).toMatchObject({ status: 'signed-out', attempt: { phase: 'cancelled' } })
-})
-
-it('preserves localhost and the browser-visible port in authorization initialization', async () => {
-  const f = await fixture()
-  const origin = f.callbackOrigin.replace('127.0.0.1', 'localhost')
-  await f.account.startSignIn(clientMetadata(), origin, 'web')
-  const state = await f.wait('waiting-browser')
-  expect(f.init().redirect_uri).toBe(`${origin}/oauth/callback`)
-  await f.account.cancelSignIn(state.attempt!.id)
-})
+// The desktop flow never calls `auth_init`, so there is no `authorize_id` to validate, no remote
+// `auth_cancel`, and no initialization-time redirect URI to echo back. Those cases were removed with
+// the protocol they covered; the CSRF state and the state-matched route replace them.
 
 it('never exports an embedded Platform token to a different configured issuer', async () => {
   const f = await fixture()
@@ -786,7 +774,7 @@ async function readDetails(account: Pick<DeepSeekAccount, 'getProfile' | 'getBal
 }
 
 it('fails a balance query after its configured deadline while profile queries remain available', async () => {
-  const f = await fixture(undefined, {}, false, {}, undefined, undefined, '', null, 50)
+  const f = await fixture(undefined, {}, {}, undefined, undefined, '', null, 50)
   await storeAccount(f)
   f.holdBalance()
   try {
@@ -810,27 +798,37 @@ it('returns the profile while the balance request is still pending', async () =>
 })
 
 
-it('uses exchange user for the first profile read and fetches current on refresh', async () => {
-  const f = await fixture()
-  f.exchangeResponse({ user: { id: 'exchange-user', email: 'e***@example.invalid', id_profile: { name: 'Exchange User' }, token: 'discard-me' } })
+it('serves the sign-in snapshot when the deployment has no DeepSeek account APIs', async () => {
+  // utoken implements desktop login and inference only: the profile and balance endpoints do not
+  // exist there, so the gateway profile comes from the exchange snapshot instead of a doomed request.
+  const f = await fixture(undefined, {}, {}, undefined, undefined, '', null, 30_000, {},
+    { platformAccountApis: false })
+  f.setDesktopUser({ id: 7, username: 'alice', display_name: '', role: 1, group: 'default' })
   await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'desktop')
   await f.wait('waiting-browser')
   await fetch(f.callback(), { redirect: 'manual' })
-  expect(await f.account.getProfile(clientMetadata())).toMatchInlineSnapshot(`
-    {
-      "status": "ready",
-      "value": {
-        "avatarUrl": null,
-        "contact": "e***@example.invalid",
-        "id": "exchange-user",
-        "name": "Exchange User",
-      },
-    }
-  `)
+  expect(await f.account.getProfile(clientMetadata())).toEqual({
+    status: 'ready', value: { id: '7', name: 'alice', contact: null, username: 'alice', role: 1, group: 'default' },
+  })
+  expect(await f.account.getBalance(clientMetadata())).toEqual({ status: 'failed' })
   expect(f.detailRequests).toEqual([])
-  expect((await f.account.getProfile(clientMetadata()))).toMatchObject({ status: 'ready', value: { name: 'Test Account' } })
-  expect(f.detailRequests).toHaveLength(1)
-  expect(await readFile(join(f.home, 'credentials.yaml'), 'utf8')).not.toContain('discard-me')
+  // A deployment without the account APIs has no remote revocation endpoint either.
+  await f.account.signOut(clientMetadata())
+  expect(f.logoutCount()).toBe(0)
+  // The snapshot is bound to the origin that issued it and disappears with the grant.
+  expect(await f.account.getProfile(clientMetadata())).toBeNull()
+  expect(await f.ctx.credentials.readRecord(credentialKey('deepseek-account-platform', 'profile'))).toBeUndefined()
+})
+
+it('keeps a valid grant when the exchange omits the account snapshot', async () => {
+  const f = await fixture()
+  await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'desktop')
+  await f.wait('waiting-browser')
+  await fetch(f.callback(), { redirect: 'manual' })
+  expect((await f.account.getState()).status).toBe('credential-stored')
+  expect(await f.ctx.credentials.readRecord(credentialKey('deepseek-account-platform', 'speech')))
+    .toMatchObject({ kind: 'grant', payload: { key: 'sk-test-language-key' } })
+  expect(await f.ctx.credentials.readRecord(credentialKey('deepseek-account-platform', 'profile'))).toBeUndefined()
 })
 
 it.each([undefined, null, { email: 123 }])('fetches current when exchange user is unavailable: %j', async (user) => {
@@ -844,27 +842,12 @@ it.each([undefined, null, { email: 123 }])('fetches current when exchange user i
 })
 
 
-it('uses the initialization payload ID for cancellation without extracting it from the browser URL', async () => {
-  const f = await fixture()
-  f.initResponse({ authorize_id: 'payload-id', authorize_url: `${f.origin}/dsh/authorize?opaque=value` })
-  await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'desktop')
-  const state = await f.wait('waiting-browser')
-  await f.account.cancelSignIn(state.attempt!.id)
-  await f.cancellationReceived.promise
-  expect(f.cancellations[0]?.authorize_id).toBe('payload-id')
-})
-
-it.each([undefined, '', 123])('rejects an invalid initialization authorize_id: %j', async (authorizeId) => {
-  const f = await fixture()
-  f.initResponse({ authorize_id: authorizeId })
-  await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'desktop')
-  expect(await f.wait('failed')).toMatchObject({ status: 'signed-out', attempt: { errorCode: 'protocol' } })
-  expect(f.count()).toBe(0)
-})
+// The desktop flow has no initialization payload, so its `authorize_id` validation cases were removed
+// with the protocol they covered.
 
 
 it('overlays account cookies without changing authorization or logout routing', async () => {
-  const f = await fixture(undefined, { Cookie: 'gate=private; route=auth', 'x-private': 'keep' }, false, { Cookie: 'route=account' })
+  const f = await fixture(undefined, { Cookie: 'gate=private; route=auth', 'x-private': 'keep' }, { Cookie: 'route=account' })
   await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'desktop')
   await f.wait('waiting-browser')
   await fetch(f.callback(), { redirect: 'manual' })
@@ -880,17 +863,21 @@ it('overlays account cookies without changing authorization or logout routing', 
 })
 
 
-it('sends a development grant only to its configured inference origin', async () => {
-  const f = await fixture(undefined, {}, false, {}, 'http://inference.example.test:8094')
-  f.exchangeResponse({ token: 'test-account-token' })
+it('sends a development grant and its language key only to the configured inference origin', async () => {
+  const grant = 'T'.repeat(43)
+  const f = await fixture(undefined, {}, {}, 'http://inference.example.test:8094')
+  f.setAccessToken(grant)
   await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'desktop')
   await f.wait('waiting-browser')
   await fetch(f.callback(), { redirect: 'manual' })
   await f.wait('succeeded')
-  expect(await f.account.resolveToken('http://inference.example.test:8094/api')).toBe('test-account-token')
+  expect(await f.account.resolveToken('http://inference.example.test:8094/api')).toBe(grant)
+  expect(await f.account.resolveLanguageKey('http://inference.example.test:8094/api')).toBe('sk-test-language-key')
   for (const url of ['https://api.deepseek.com', 'http://inference.example.test:8095/api',
     'https://inference.example.test:8094/api', 'http://user@inference.example.test:8094/api']) {
     expect(await f.account.resolveToken(url)).toBeUndefined()
+    // A profile that names another Messages base URL must not receive the gateway key either.
+    expect(await f.account.resolveLanguageKey(url)).toBeUndefined()
   }
 })
 
@@ -899,7 +886,7 @@ it('starts signed out after discarding another Platform issuer without remote lo
   const accountKey = credentialKey('deepseek-account-platform', 'default')
   const deviceKey = credentialKey('deepseek-account-platform', 'device')
   const apiKey = credentialRef('TEST_PLATFORM_SWITCH_API_KEY')
-  const f = await fixture(undefined, {}, false, {}, undefined, async (ctx) => {
+  const f = await fixture(undefined, {}, {}, undefined, async (ctx) => {
     await ctx.credentials.modifyRecord(accountKey, () => Promise.resolve({
       kind: 'grant', payload: { version: 1, issuer: 'https://old-platform.example.test', token: 'old-token' },
     }))
@@ -918,7 +905,7 @@ it('starts signed out after discarding another Platform issuer without remote lo
 
 it('preserves a matching issuer and its grant when a balance request fails', async () => {
   const accountKey = credentialKey('deepseek-account-platform', 'default')
-  const f = await fixture(undefined, {}, false, {}, undefined, async (ctx, issuer) => {
+  const f = await fixture(undefined, {}, {}, undefined, async (ctx, issuer) => {
     await ctx.credentials.modifyRecord(accountKey, () => Promise.resolve({
       kind: 'grant', payload: { version: 1, issuer, token: 'retained-token' },
     }))
@@ -931,13 +918,13 @@ it('preserves a matching issuer and its grant when a balance request fails', asy
 })
 
 it('carries the configured embedded frontend selector in the private Platform session', async () => {
-  const f = await fixture(undefined, {}, false, {}, undefined, undefined, 'feat/test')
+  const f = await fixture(undefined, {}, {}, undefined, undefined, 'feat/test')
   await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'desktop')
   await f.wait('waiting-browser')
   await fetch(f.callback(), { redirect: 'manual' })
   await f.account.getProfile(clientMetadata())
-  expect(await f.account.getPlatformSession()).toEqual({ origin: f.origin, userId: 'test-user', token: 'dsh_mock_test', embeddedPageDist: 'feat/test',
-    requestHeaders: {} })
+  expect(await f.account.getPlatformSession()).toEqual({ origin: f.origin, userId: 'test-user', token: 'A'.repeat(43), embeddedPageDist: 'feat/test',
+    usagePath: '/usage', topUpPath: '/top_up', requestHeaders: {} })
 })
 
 it.each([
@@ -948,28 +935,20 @@ it.each([
   // consuming client composes the same five headers on top.
   const overrides = { 'x-client-bundle-id': 'deployment', 'x-client-platform': 'deployment',
     'x-client-version': 'deployment', 'x-client-locale': 'deployment', 'x-client-timezone-offset': 'deployment' }
-  const f = await fixture(undefined, { Cookie: 'test_gate=synthetic', ...overrides }, false, overrides,
+  const f = await fixture(undefined, { Cookie: 'test_gate=synthetic', ...overrides }, overrides,
     undefined, undefined, '', desktopPlatform)
-  await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'desktop')
-  await f.wait('waiting-browser')
-  const attempt = (await f.account.getState()).attempt!
-  await f.account.cancelSignIn(attempt.id)
-  await f.cancellationReceived.promise
   await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'desktop')
   await f.wait('waiting-browser')
   await fetch(f.callback(), { redirect: 'manual' })
   await readDetails(f.account)
-  expect(await f.account.getPlatformSession()).toEqual({ origin: f.origin, userId: 'test-user', token: 'dsh_mock_test',
-    requestHeaders: { cookie: 'test_gate=synthetic', ...overrides } })
+  expect(await f.account.getPlatformSession()).toEqual({ origin: f.origin, userId: 'test-user', token: 'A'.repeat(43),
+    usagePath: '/usage', topUpPath: '/top_up', requestHeaders: { cookie: 'test_gate=synthetic', ...overrides } })
   await f.account.signOut(clientMetadata())
   await expect.poll(f.logoutCount).toBe(1)
   const paths = f.receivedHeaders.map(item => item.path)
-  expect(paths.slice(0, 4)).toEqual([
-    '/auth-api/v0/dsh/auth_init', '/auth-api/v0/dsh/auth_cancel',
-    '/auth-api/v0/dsh/auth_init', '/auth-api/v0/dsh/auth_exchange',
-  ])
+  expect(paths.slice(0, 1)).toEqual(['/api/desktop-auth/token'])
   // Profile and balance requests run concurrently.
-  expect(paths.slice(4, -1).sort()).toEqual(['/api/v0/users/get_user_summary', '/auth-api/v0/users/current'])
+  expect(paths.slice(1, -1).sort()).toEqual(['/api/v0/users/get_user_summary', '/auth-api/v0/users/current'])
   expect(paths.slice(-1)).toEqual(['/auth-api/v0/users/logout'])
   expect(f.receivedHeaders.map(item => item.clientPlatform)).toEqual(f.receivedHeaders.map(() => expected))
   for (const header of f.receivedHeaders) {
@@ -986,19 +965,16 @@ it('keeps one login attempt on the identity captured by its own initiating call'
   const waiting = await f.wait('waiting-browser')
   // A joining call supplies other metadata; the attempt keeps the identity it captured.
   expect((await f.account.startSignIn(EN_CLIENT, f.callbackOrigin, 'desktop')).attempt?.id).toBe(waiting.attempt?.id)
-  await f.account.cancelSignIn(waiting.attempt!.id)
-  await f.cancellationReceived.promise
-  await f.account.startSignIn(EN_CLIENT, f.callbackOrigin, 'desktop')
-  await f.wait('waiting-browser')
   await fetch(f.callback(), { redirect: 'manual' })
   expect(f.receivedHeaders.map(header => [
     header.path, header.bundleId, header.clientPlatform, header.version, header.locale, header.timezoneOffset,
-  ])).toEqual([
-    ['/auth-api/v0/dsh/auth_init', '', 'web', '1.0.0', 'zh_CN', '28800'],
-    ['/auth-api/v0/dsh/auth_cancel', '', 'web', '1.0.0', 'zh_CN', '28800'],
-    ['/auth-api/v0/dsh/auth_init', '', 'web', '9.9.9', 'en_US', '-18000'],
-    ['/auth-api/v0/dsh/auth_exchange', '', 'web', '9.9.9', 'en_US', '-18000'],
-  ])
+  ])).toEqual([['/api/desktop-auth/token', '', 'web', '1.0.0', 'zh_CN', '28800']])
+  // The next attempt starts from the metadata of the call that opens it.
+  await f.account.signOut(clientMetadata())
+  await f.account.startSignIn(EN_CLIENT, f.callbackOrigin, 'desktop')
+  await f.wait('waiting-browser')
+  await fetch(f.callback(), { redirect: 'manual' })
+  expect(f.receivedHeaders.at(-1)).toMatchObject({ version: '9.9.9', locale: 'en_US', timezoneOffset: '-18000' })
 })
 
 it('derives the client headers independently for profile, balance, and logout calls', async () => {
@@ -1024,12 +1000,11 @@ it('rejects unsupported native desktop platforms in configuration', () => {
 
 it('retains successful profile data on current failure only for the same credential', async () => {
   const f = await fixture()
-  f.exchangeResponse({ user: { email: 'e***@example.invalid', id_profile: { name: 'Exchange User' } } })
   await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'desktop')
   await f.wait('waiting-browser')
   await fetch(f.callback(), { redirect: 'manual' })
   const initial = await f.account.getProfile(clientMetadata())
-  expect(initial).toMatchObject({ status: 'ready', value: { name: 'Exchange User' } })
+  expect(initial).toMatchObject({ status: 'ready', value: { name: 'Test Account' } })
   f.failProfile(true)
   expect(await f.account.getProfile(clientMetadata())).toEqual(initial)
   f.failProfile(false)
@@ -1167,7 +1142,7 @@ it('returns no credentials when signed out or disposed', async () => {
 })
 
 it('rejects sign-out and inference grants issued by another environment', async () => {
-  const f = await fixture(undefined, {}, false, {}, 'https://private.example')
+  const f = await fixture(undefined, {}, {}, 'https://private.example')
   await f.ctx.credentials.modifyRecord(credentialKey('deepseek-account-platform', 'default'), () => Promise.resolve({
     kind: 'grant', payload: { version: 1, token: 'real-token', issuer: 'https://other.example' },
   }))
@@ -1184,24 +1159,9 @@ it('never sends a development issuer grant to official inference', async () => {
 })
 
 it('merges account cookies when there are no base cookies', async () => {
-  const f = await fixture(undefined, {}, false, { cookie: 'account=value' })
+  const f = await fixture(undefined, {}, { cookie: 'account=value' })
   await storeAccount(f)
   expect(await f.account.getPlatformSession()).toMatchObject({ requestHeaders: { cookie: 'account=value' } })
-})
-
-it.each([null, []])('rejects invalid initialization and exchange payload fields: %j', async (value) => {
-  const f = await fixture()
-  f.initResponse({ authorize_id: value })
-  await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'web')
-  await f.wait('failed')
-  f.initResponse({})
-  f.exchangeResponse({ token: value })
-  await f.account.startSignIn(clientMetadata('zh'), f.callbackOrigin, 'web')
-  await f.wait('waiting-browser')
-  const callback = await fetch(f.callback(), { redirect: 'manual' })
-  expect(callback.status).toBe(200)
-  expect(await callback.text()).toContain('登录失败')
-  expect((await f.wait('failed')).status).toBe('signed-out')
 })
 
 it.each([{ kind: 'api-key' as const, key: 'wrong-kind' }, { kind: 'grant' as const, payload: null }])(
@@ -1247,45 +1207,32 @@ it('reports a credential commit failure without redirecting to success', async (
   } finally { modify.mockRestore() }
 })
 
-it('rejects a device record of the wrong kind before exchanging', async () => {
-  const f = await fixture()
-  await f.ctx.credentials.modifyRecord(credentialKey('deepseek-account-platform', 'device'), () => Promise.resolve({ kind: 'api-key', key: 'wrong' }))
-  await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'desktop')
-  await f.wait('waiting-browser')
-  expect((await fetch(f.callback(), { redirect: 'manual' })).status).toBe(204)
-  expect((await f.wait('failed')).attempt?.errorCode).toBe('storage')
-  expect(f.count()).toBe(0)
-})
-
-it('rejects callbacks with missing state and callbacks arriving during exchange', async () => {
+it('rejects callbacks without a state and reloads of an in-flight exchange', async () => {
   const f = await fixture()
   f.hold()
   await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'web')
   await f.wait('waiting-browser')
-  expect((await fetch(`${f.init().redirect_uri}?code=test`)).status).toBe(400)
+  // A return without the CSRF state never reaches the exchange.
+  expect((await fetch(`${f.callbackOrigin}${DESKTOP_CALLBACK_PATH}?code=test`)).status).toBe(400)
+  expect(f.count()).toBe(0)
   const callback = fetch(f.callback(), { redirect: 'manual' })
   await f.exchanged.promise
-  expect((await fetch(f.callback())).status).toBe(410)
+  // A reload while the exchange is in flight is answered as consumed instead of exchanging twice.
+  expect((await fetch(f.callback())).status).toBe(400)
   f.release.resolve(undefined)
-  expect((await callback).status).toBe(302)
+  expect((await callback).status).toBe(200)
+  expect(f.count()).toBe(1)
 })
 
-it.each(['initializing', 'waiting-browser'])('expires the attempt while %s', async (phase) => {
+it('expires the attempt while waiting for the browser', async () => {
   const f = await fixture()
   const timeout = vi.spyOn(globalThis, 'setTimeout')
-  if (phase === 'initializing') f.onInit(() => {
-    const timer = timeout.mock.calls.find(([, delay]) => delay === 600_000)?.[0]
-    if (typeof timer !== 'function') throw new Error('missing initial deadline')
-    timer()
-  })
   try {
     await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'web')
-    if (phase === 'waiting-browser') {
-      await f.wait('waiting-browser')
-      const timer = timeout.mock.calls.filter(([, delay]) => typeof delay === 'number' && delay > 590_000).at(-1)?.[0]
-      if (typeof timer !== 'function') throw new Error('missing browser deadline')
-      timer()
-    }
+    await f.wait('waiting-browser')
+    const timer = timeout.mock.calls.filter(([, delay]) => typeof delay === 'number' && delay > 590_000).at(-1)?.[0]
+    if (typeof timer !== 'function') throw new Error('missing browser deadline')
+    timer()
     expect((await f.wait('expired')).status).toBe('signed-out')
   } finally { timeout.mockRestore() }
 })
@@ -1311,7 +1258,7 @@ it('holds cancellation and disposal until an admitted account write completes', 
     const cancelled = f.account.cancelSignIn(state.attempt!.id)
     const disposed = f.dispose()
     release.resolve(undefined)
-    expect((await callback).status).toBe(302)
+    expect((await callback).status).toBe(200)
     expect((await cancelled).status).toBe('credential-stored')
     await disposed
   } finally {
@@ -1338,7 +1285,7 @@ it('waits for local sign-out before beginning a new authorization', async () => 
     const login = f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'web')
     release.resolve(undefined)
     expect((await out).status).toBe('signed-out')
-    expect((await login).attempt?.phase).toBe('initializing')
+    expect((await login).attempt).toBeDefined()
     await f.wait('waiting-browser')
   } finally { release.resolve(undefined); remove.mockRestore() }
 })
@@ -1404,33 +1351,36 @@ it('rejects unsupported interaction and projects unexpected authorization failur
   } finally { begin.mockRestore() }
 })
 
-it('delegates other callback authorities and paths, and rejects malformed callback URLs', async () => {
+it('claims only its own callback path and delegates everything else', async () => {
   const f = await fixture()
   await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'web')
   await f.wait('waiting-browser')
-  for (const input of [
-    { url: f.callback(), host: undefined },
-    { url: f.callback(), host: '[' },
-    { url: 'http://untrusted.invalid/oauth/callback?code=test' },
-    { url: undefined },
-    { url: 'http://[' },
-  ]) {
+  // `delegated` inputs must reach the next handler; `answered` inputs are claimed by the account
+  // route, which refuses them because their state cannot belong to the attempt.
+  for (const [input, expected] of [
+    [{ url: 'http://untrusted.invalid/oauth/callback?code=test' }, 'delegated'],
+    [{ url: 'http://untrusted.invalid/desktop-auth/callback?code=test&state=wrong' }, 'answered'],
+    [{ url: '/other/path?code=test' }, 'delegated'],
+    [{ url: `${DESKTOP_CALLBACK_PATH}?code=test` }, 'answered'],
+    [{ url: undefined }, 'delegated'],
+    [{ url: 'http://[' }, 'delegated'],
+  ] as const) {
     const socket = new Socket()
     const req = new IncomingMessage(socket)
     req.method = 'GET'
     req.url = input.url
-    req.headers.host = 'host' in input ? input.host : new URL(f.callbackOrigin).host
+    req.headers.host = new URL(f.callbackOrigin).host
     const res = new ServerResponse(req)
     const next = vi.fn(async () => {})
     try {
       await f.ctx.waterfall(f.ctx.webServer, 'webserver/request', req, res, next)
-      if (input.url === 'http://[') {
-        expect(res.statusCode).toBe(400)
-        expect(res.writableEnded).toBe(true)
-        expect(next).not.toHaveBeenCalled()
-      } else {
+      if (expected === 'delegated') {
         expect(next).toHaveBeenCalledOnce()
         expect(res.writableEnded).toBe(false)
+      } else {
+        expect(next).not.toHaveBeenCalled()
+        expect(res.statusCode).toBe(400)
+        expect(res.writableEnded).toBe(true)
       }
       expect(f.count()).toBe(0)
     } finally { res.destroy(); socket.destroy() }
@@ -1440,32 +1390,18 @@ it('delegates other callback authorities and paths, and rejects malformed callba
 it('settles an attempt after its browser callback connection closes during exchange', async () => {
   const f = await fixture()
   f.hold()
-  const response = Promise.withResolvers<ServerResponse>()
-  const serverClosed = Promise.withResolvers<undefined>()
-  const remove = f.ctx.on('webserver/request', async (_req, res, next) => {
-    response.resolve(res)
-    res.once('error', () => undefined)
-    res.once('close', () => { serverClosed.resolve(undefined) })
-    await next()
-  })
   await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'web')
   await f.wait('waiting-browser')
-  const socket = connect(Number(new URL(f.callbackOrigin).port), '127.0.0.1')
-  const closed = new Promise<void>(resolve => socket.once('close', () => { resolve() }))
-  try {
-    await new Promise<void>(resolve => socket.once('connect', resolve))
-    socket.write(`GET ${new URL(f.callback()).pathname}${new URL(f.callback()).search} HTTP/1.1\r\nHost: ${new URL(f.callbackOrigin).host}\r\n\r\n`)
-    await f.exchanged.promise
-    const callbackResponse = await response.promise
-    vi.spyOn(callbackResponse, 'end').mockImplementation(() => callbackResponse)
-    callbackResponse.destroy(new Error('callback transport failed'))
-    socket.destroy()
-    await closed
-    await serverClosed.promise
-    f.release.resolve(undefined)
-    await f.wait('succeeded')
-    expect((await f.account.signOut(clientMetadata())).status).toBe('signed-out')
-  } finally { socket.destroy(); f.release.resolve(undefined); await closed; remove() }
+  // The person closes the tab while the token exchange is still in flight.
+  const abandoned = new AbortController()
+  const callback = fetch(f.callback(), { signal: abandoned.signal }).catch(() => undefined)
+  await f.exchanged.promise
+  abandoned.abort()
+  await callback
+  f.release.resolve(undefined)
+  // The grant still lands: the exchange, not the dead connection, owns the attempt.
+  await f.wait('succeeded')
+  expect((await f.account.signOut(clientMetadata())).status).toBe('signed-out')
 })
 
 it('invalidates account reads before the shared grant lookup returns to its caller', async () => {
@@ -1706,6 +1642,32 @@ it('ignores an inference rejection while already signed out', async () => {
   await f.account.rejectToken('previous-platform-grant')
   expect(await f.account.getState()).toMatchObject({ status: 'signed-out' })
   expect(await f.account.getState()).not.toHaveProperty('signOutReason')
+})
+
+it('clears only the language key an inference request rejected', async () => {
+  const f = await fixture()
+  await storeAccount(f)
+  await f.ctx.credentials.modifyRecord(credentialKey('deepseek-account-platform', 'speech'), () => Promise.resolve({
+    kind: 'grant', payload: { version: 1, key: 'sk-test-language-key', issuer: f.origin },
+  }))
+  expect(await f.account.resolveLanguageKey()).toBe('sk-test-language-key')
+  await f.account.rejectToken('sk-test-language-key')
+  expect(await f.account.resolveLanguageKey()).toBeUndefined()
+  // The access token still proves the login: the account stays signed in and can mint a fresh key.
+  expect(await f.account.getState()).toMatchObject({ status: 'credential-stored' })
+  expect(await f.ctx.credentials.readRecord(credentialKey('deepseek-account-platform', 'default')))
+    .toMatchObject({ kind: 'grant', payload: { token: 'test-platform-grant' } })
+})
+
+it('removes the language key together with an expired grant', async () => {
+  const f = await fixture()
+  await storeAccount(f)
+  await f.ctx.credentials.modifyRecord(credentialKey('deepseek-account-platform', 'speech'), () => Promise.resolve({
+    kind: 'grant', payload: { version: 1, key: 'sk-test-language-key', issuer: f.origin },
+  }))
+  await f.account.rejectToken('test-platform-grant')
+  expect(await f.account.getState()).toMatchObject({ status: 'signed-out' })
+  expect(await f.ctx.credentials.readRecord(credentialKey('deepseek-account-platform', 'speech'))).toBeUndefined()
 })
 
 

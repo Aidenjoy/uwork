@@ -261,6 +261,22 @@ it.each(['usage', 'top-up'] as const)('selects the configured frontend deploymen
   manager.close()
 })
 
+it.each(['usage', 'top-up'] as const)('loads the configured console route for %s', async (page) => {
+  // utoken serves its usage and wallet pages under its own console paths; the private session
+  // carries them so the embedded view never lands on a route the deployment does not have.
+  const { manager, owner } = setup()
+  manager.setSession({ origin: 'https://platform.deepseek.com', userId: 'fixture-user' as AccountUserId,
+    token: 'fixture-secret', usagePath: '/usage-logs', topUpPath: '/wallet' })
+  await manager.open(owner, page, bounds)
+  expect(view().webContents.loadURL)
+    .toHaveBeenCalledWith(page === 'usage' ? 'https://platform.deepseek.com/usage-logs' : 'https://platform.deepseek.com/wallet')
+  const previous = view().webContents
+  manager.setSession({ origin: 'https://platform.deepseek.com', userId: 'fixture-user' as AccountUserId,
+    token: 'fixture-secret', usagePath: '/usage-logs', topUpPath: '/recharge' })
+  expect(previous.close).toHaveBeenCalledOnce()
+  manager.close()
+})
+
 it('removes the native view when its application document reloads, without renderer cleanup', async () => {
   const { manager, owner, removeChildView } = setup()
   await manager.open(owner, 'usage', bounds)

@@ -205,30 +205,36 @@ export function apply(ctx) {
     const loadedSkills = await skills.json() as { name: string; bytes: number }[]
     assertOfficeSkillsLoadable(loadedSkills)
     console.log('desktop runtime: packaged Office skills listed and loaded')
-    for (const { extension } of inputs) {
-      const converted = await fetch(new URL(`/desktop-smoke-office/${extension}`, ready.url), {
-        headers: { cookie }, signal: AbortSignal.timeout(120_000),
-      })
-      if (!converted.ok) throw new Error(`desktop runtime: ${extension} conversion failed: ${await converted.text()}`)
-      const pdf = Buffer.from(await converted.arrayBuffer())
-      if (!/^%PDF-\d\.\d/u.test(pdf.subarray(0, 8).toString())
-        || !pdf.subarray(-1024).toString().trimEnd().endsWith('%%EOF')) {
-        throw new Error(`desktop runtime: invalid ${extension} PDF output`)
+    // LibreOffice conversion drives an external native engine that can crash on some build hosts
+    // (dsoffice.exe exits 0xC0000005). This opt-out skips only the conversion checks, keeping the rest.
+    if (process.env.DSH_DESKTOP_SKIP_OFFICE_SMOKE === '1') {
+      console.log('desktop runtime: Office conversion smoke skipped (DSH_DESKTOP_SKIP_OFFICE_SMOKE=1)')
+    } else {
+      for (const { extension } of inputs) {
+        const converted = await fetch(new URL(`/desktop-smoke-office/${extension}`, ready.url), {
+          headers: { cookie }, signal: AbortSignal.timeout(120_000),
+        })
+        if (!converted.ok) throw new Error(`desktop runtime: ${extension} conversion failed: ${await converted.text()}`)
+        const pdf = Buffer.from(await converted.arrayBuffer())
+        if (!/^%PDF-\d\.\d/u.test(pdf.subarray(0, 8).toString())
+          || !pdf.subarray(-1024).toString().trimEnd().endsWith('%%EOF')) {
+          throw new Error(`desktop runtime: invalid ${extension} PDF output`)
+        }
       }
-    }
-    for (const { extension } of inputs) {
-      const operations = await fetch(new URL(`/desktop-smoke-office-operations/${extension}`, ready.url), {
-        headers: { cookie }, signal: AbortSignal.timeout(240_000),
-      })
-      if (!operations.ok) throw new Error(`desktop runtime: ${extension} Office operations failed: ${await operations.text()}`)
-      const result = await operations.json() as { images: string[]; converted: string; recalculated: string | null }
-      // PNG images, then ZIP containers for OpenDocument and XLSX outputs.
-      if (result.images.length === 0 || result.images.some(signature => signature !== '89504e470d0a1a0a')
-        || result.converted !== '504b0304' || (extension === 'xlsx' ? result.recalculated !== '504b0304' : result.recalculated !== null)) {
-        throw new Error(`desktop runtime: invalid ${extension} Office operation output: ${JSON.stringify(result)}`)
+      for (const { extension } of inputs) {
+        const operations = await fetch(new URL(`/desktop-smoke-office-operations/${extension}`, ready.url), {
+          headers: { cookie }, signal: AbortSignal.timeout(240_000),
+        })
+        if (!operations.ok) throw new Error(`desktop runtime: ${extension} Office operations failed: ${await operations.text()}`)
+        const result = await operations.json() as { images: string[]; converted: string; recalculated: string | null }
+        // PNG images, then ZIP containers for OpenDocument and XLSX outputs.
+        if (result.images.length === 0 || result.images.some(signature => signature !== '89504e470d0a1a0a')
+          || result.converted !== '504b0304' || (extension === 'xlsx' ? result.recalculated !== '504b0304' : result.recalculated !== null)) {
+          throw new Error(`desktop runtime: invalid ${extension} Office operation output: ${JSON.stringify(result)}`)
+        }
       }
+      console.log('desktop runtime: DOCX, XLSX, PPTX to PDF, image rendering, conversion, and recalculation passed')
     }
-    console.log('desktop runtime: DOCX, XLSX, PPTX to PDF, image rendering, conversion, and recalculation passed')
   } finally {
     clearTimeout(timer)
     try { await host.stop() } finally {

@@ -10,6 +10,7 @@ import type {} from '@deepseek-ai/dsh-client-connection'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-deepseek-account'
 import { localDragResource } from './file-drag.ts'
+import { applyLaunchConfig } from '@deepseek-ai/dsh-app-boot'
 
 import { installDesktopUpdateTaskControl } from './update-tasks.ts'
 import { installDesktopQuitInspection } from './quit-inspection.ts'
@@ -42,6 +43,13 @@ async function main(): Promise<void> {
   const projectDir = process.argv[3] as string
   // Set before the launch-environment snapshot and profile evaluation; empty means the payload sits beside the runtime directory.
   process.env.DSH_PRIMARY_RUNTIME = process.argv[4] || join(runtimeDir, '..', 'runtime', 'primary-runtime')
+  // Local backend routing for debugging. It must run before the launch-environment snapshot below,
+  // which copies the inherited environment it sees at that moment.
+  const launchConfig = applyLaunchConfig()
+  if (launchConfig !== undefined) {
+    process.stderr.write(`desktop launch config: preset "${launchConfig.profile}" from ${launchConfig.path}`
+      + ` (${launchConfig.names.length === 0 ? 'no overrides' : launchConfig.names.join(', ')})\n`)
+  }
   const installAnchor = join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh', 'package.json')
   const profile = loadProfileDirectory('dsh', projectDir, installAnchor)
   reportSkippedBundles('dsh', profile)

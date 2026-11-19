@@ -6,7 +6,7 @@
 
 /* v8 ignore file -- built-bin acceptance exercises this self-executing dispatch. */
 
-import { getDshRuntimeVersion, loadLayeredEnv, StartupError } from '@deepseek-ai/dsh-app-boot'
+import { applyLaunchConfig, getDshRuntimeVersion, loadLayeredEnv, StartupError } from '@deepseek-ai/dsh-app-boot'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { parseDshArgs } from './args.ts'
 import { reportStartupFailure } from './startup-diagnostics.ts'
@@ -27,6 +27,14 @@ export async function runCli(options: RunCliOptions = {}): Promise<void> {
   const version = getDshRuntimeVersion()
   const { manageDesktopProfile, ...profileOptions } = options
   const invocation = parseDshArgs(process.argv.slice(2), version, manageDesktopProfile)
+  // Local backend routing. It must run before any `loadLayeredEnv` snapshot, which copies the
+  // inherited environment it sees at that moment. Silent unless YUN_VERBOSE asks for the summary,
+  // so scripted output on stderr stays empty.
+  const launchConfig = applyLaunchConfig()
+  if (launchConfig !== undefined && process.env.YUN_VERBOSE === '1') {
+    process.stderr.write(`launch config: preset "${launchConfig.profile}" from ${launchConfig.path}`
+      + ` (${launchConfig.names.length === 0 ? 'no overrides' : launchConfig.names.join(', ')})\n`)
+  }
 
   switch (invocation.mode) {
     case 'profile': {

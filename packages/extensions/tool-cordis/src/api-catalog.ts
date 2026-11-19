@@ -1062,6 +1062,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'stored token, or undefined for other origins or a signed-out account.',
       },
       {
+        signature: 'async resolveLanguageKey(): Promise<string | undefined>',
+        description: 'Read the long-lived language-model key issued by the utoken desktop exchange. It is the credential for model and speech requests, kept apart from the 10-minute access token.',
+        parameters: [],
+        returns: 'the `sk-`-prefixed key, or undefined while signed out or when the record was issued by a different authorization origin.',
+      },
+      {
         signature: '@Remote async startSignIn(client: AccountClientMetadata, callbackOrigin: string, loginSource: \'web\' | \'desktop\'): Promise<AccountView>',
         description: 'Join an active attempt or start browser authorization.',
         parameters: [{ name: 'client', description: 'identity of the requesting UI; a new attempt captures it, and joining retains the original attempt\'s identity.' }, { name: 'callbackOrigin', description: 'browser-accessible loopback HTTP origin, including any SSH local port.' }, { name: 'loginSource', description: 'initiating UI, used to return from a failed exchange.' }],
@@ -5892,7 +5898,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'AccountProfile',
-    declaration: 'export interface AccountProfile {\n    readonly id: AccountUserId | null;\n    readonly name: string | null;\n    readonly contact: string | null;\n    readonly avatarUrl?: string | null;\n}',
+    declaration: 'export interface AccountProfile {\n    readonly id: AccountUserId | null;\n    readonly name: string | null;\n    readonly contact: string | null;\n    readonly avatarUrl?: string | null;\n    readonly username?: string;\n    readonly role?: number;\n    readonly group?: string;\n}',
   },
   {
     name: 'AccountUpdate',
@@ -8188,7 +8194,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'PlatformSession',
-    declaration: 'export interface PlatformSession {\n    readonly origin: string;\n    readonly token: string;\n    readonly userId: AccountUserId | null;\n    readonly embeddedPageDist?: string;\n    readonly requestHeaders?: Readonly<Record<string, string>>;\n}',
+    declaration: 'export interface PlatformSession {\n    readonly origin: string;\n    readonly token: string;\n    readonly userId: AccountUserId | null;\n    readonly embeddedPageDist?: string;\n    readonly usagePath?: string;\n    readonly topUpPath?: string;\n    readonly requestHeaders?: Readonly<Record<string, string>>;\n}',
   },
   {
     name: 'PluginChange',

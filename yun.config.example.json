@@ -1,0 +1,28 @@
+{
+  "$comment": [
+    "复制为 yun.config.json 后按需修改（该文件名已被 .gitignore 忽略）。",
+    "默认指向正式部署地址；本机临时地址（如内网 IP、127.0.0.1）写进 yun.config.json，该文件不入库。",
+    "active 选择启用哪个预设，也可用 YUN_PROFILE 环境变量临时覆盖。",
+    "键名直接就是进程环境变量名。这几个名字无法写进 .env —— 框架禁止任何 .env 设置",
+    "DSH_ 前缀变量（packages/boot/app-boot BOOTSTRAP_PREFIXES），必须由启动环境提供。",
+    "DEEPSEEK_BASE_URL 填到端口即可，messagesApiRoot 会自动补 /v1（填成 .../v1 也不会重复拼）。",
+    "DSH_ACCOUNT_INSECURE=0 拒绝明文 HTTP；内网临时用 http:// 调试时设为 1。",
+    "空预设（如 official）表示不注入任何变量，回落到官方默认域名。"
+  ],
+  "active": "intranet",
+  "profiles": {
+    "intranet": {
+      "DSH_ACCOUNT_ORIGIN": "https://token.yundashi.com",
+      "DSH_INFERENCE_ORIGIN": "https://token.yundashi.com",
+      "DSH_ACCOUNT_INSECURE": "0",
+      "DEEPSEEK_BASE_URL": "https://token.yundashi.com"
+    },
+    "local": {
+      "DSH_ACCOUNT_ORIGIN": "http://127.0.0.1:3000",
+      "DSH_INFERENCE_ORIGIN": "http://127.0.0.1:3000",
+      "DSH_ACCOUNT_INSECURE": "1",
+      "DEEPSEEK_BASE_URL": "http://127.0.0.1:3000"
+    },
+    "official": {}
+  }
+}

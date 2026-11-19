@@ -57,6 +57,12 @@ export interface AccountProfile {
   readonly contact: string | null
   /** Profile image URL supplied by Platform, absent when no picture is configured. */
   readonly avatarUrl?: string | null
+  /** Login account from the utoken desktop exchange; absent on the official Platform profile. */
+  readonly username?: string
+  /** utoken role: 1 regular user, 10 administrator, 100 super administrator. */
+  readonly role?: number
+  /** utoken billing group deciding model multipliers. */
+  readonly group?: string
 }
 /** Platform recharge or bonus wallet balance; decimal strings retain server precision. */
 export interface AccountWallet {
@@ -119,6 +125,10 @@ export interface PlatformSession {
   readonly userId: AccountUserId | null
   /** Optional dist query value selecting the embedded frontend deployment. */
   readonly embeddedPageDist?: string
+  /** Path of the usage page on `origin`; absent means the official `/usage`. */
+  readonly usagePath?: string
+  /** Path of the top-up page on `origin`; absent means the official `/top_up`. */
+  readonly topUpPath?: string
   /** Host-only deployment request headers; the consuming client adds its own dynamic identity, and neither reaches renderer bootstrap. */
   readonly requestHeaders?: Readonly<Record<string, string>>
 }

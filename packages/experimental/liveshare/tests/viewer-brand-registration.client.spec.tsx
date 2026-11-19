@@ -77,7 +77,7 @@ describe('viewer brand registration', () => {
     const mark = runtime.renderSlot('sidebar.brand.mark', { size: 24 })
     const name = runtime.renderSlot('sidebar.brand.name', {})
     expect(mark.container.querySelector('[data-shipped="brand-mark"]')).toBeNull()
-    expect(mark.container.querySelector('svg')).not.toBeNull()
+    expect(mark.container.querySelector('img[src*="mark"]')).not.toBeNull()
     expect(name.container.querySelector('[data-shipped="brand-name"]')).toBeNull()
     expect(name.container.textContent).toContain(zh['viewer.brand'])
 
@@ -106,7 +106,7 @@ describe('viewer brand registration', () => {
     })
     const mark = runtime.renderSlot('sidebar.brand.mark', { size: 24 })
     expect(mark.container.querySelector('[data-shipped="brand-mark"]')).toBeNull()
-    expect(mark.container.querySelector('svg')).not.toBeNull()
+    expect(mark.container.querySelector('img[src*="mark"]')).not.toBeNull()
     stop()
   })
 

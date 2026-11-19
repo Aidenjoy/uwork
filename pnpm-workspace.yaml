@@ -23,6 +23,10 @@ peerDependencyRules:
   allowedVersions:
     typescript: '>=5 <7'
 
+# pnpm 11 otherwise runs an implicit workspace-wide install before every
+# run/exec; on this 408-project monorepo that dominates packaging time.
+verifyDepsBeforeRun: false
+
 # pnpm 10+ blocks any dependency shipping an install/build script until it is
 # explicitly reviewed here (strictDepBuilds defaults to true: an unlisted script
 # is a hard install error). Every such package MUST be listed; we deny by

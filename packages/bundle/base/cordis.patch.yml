@@ -87,11 +87,15 @@
 
     # The transport-independent default for Agents created by entry points.
     # Settings may supply a saved selection; consumers read it at creation time.
+    # The account route is the only mounted model route, so it owns the default too.
     - id: agent-default-model
       name: '@deepseek-ai/dsh-agent-default-model'
       config:
-        provider: deepseek-official
-        model: deepseek-flash
+        provider: deepseek-account
+        # The signed-in gateway's own /models listing decides which ids exist, so this is only the
+        # seed for a fresh profile. DSH_DEFAULT_MODEL retargets it for a deployment whose catalog
+        # publishes a different default, without editing this patch.
+        model: !!js "process.env.DSH_DEFAULT_MODEL || 'deepseek-v4-flash'"
 
     - id: jobs
       name: '@deepseek-ai/dsh-jobs-local'
@@ -121,6 +125,31 @@
       name: '@deepseek-ai/dsh-deepseek-account'
       config:
         desktopPlatform: !!js "ctx.get('profileContext')?.name === 'desktop' && ['darwin', 'win32'].includes(process.platform) ? process.platform : null"
+        # The utoken (new-api) deployment is this product's only account and inference authority,
+        # so it is the built-in default rather than a per-machine override: a packaged desktop app
+        # started from a fresh profile has no other way to learn the origin, and falling back to the
+        # official host would silently move sign-in back to DeepSeek.
+        # DSH_ACCOUNT_ORIGIN / DSH_INFERENCE_ORIGIN retarget it (e.g. http://127.0.0.1:3000 for a
+        # local gateway); a plain-HTTP origin additionally requires DSH_ACCOUNT_INSECURE=1.
+        platformOrigin: !!js "process.env.DSH_ACCOUNT_ORIGIN || 'https://token.yundashi.com'"
+        # One deployment serves sign-in and inference, so retargeting the account origin retargets
+        # inference too unless DSH_INFERENCE_ORIGIN splits them deliberately: a launch profile that
+        # only moves DSH_ACCOUNT_ORIGIN would otherwise mint keys the model route refuses to send.
+        inferenceOrigin: !!js "process.env.DSH_INFERENCE_ORIGIN || process.env.DSH_ACCOUNT_ORIGIN || 'https://token.yundashi.com'"
+        # Plain HTTP is opt-in: the shipped deployment is served over TLS, and a silent downgrade
+        # would put sign-in codes and the language key on the wire in clear text.
+        allowLoopbackHttp: !!js "process.env.DSH_ACCOUNT_INSECURE === '1'"
+        # utoken (new-api) files usage under its console log page and recharge under the wallet,
+        # so the DeepSeek paths the account panel defaults to (`/usage`, `/top_up`) fall through to
+        # the SPA's not-found route. Point both entries at the deployed routes; DSH_ACCOUNT_USAGE_PATH
+        # / DSH_ACCOUNT_TOPUP_PATH override them per deployment.
+        usagePath: !!js "process.env.DSH_ACCOUNT_USAGE_PATH || '/usage-logs'"
+        topUpPath: !!js "process.env.DSH_ACCOUNT_TOPUP_PATH || '/wallet'"
+        # utoken only implements desktop login/inference; the DeepSeek profile/balance
+        # endpoints (/auth-api/v0/users/current, /api/v0/users/get_user_summary) do not
+        # exist there. Gate those reads off so the web/desktop account panel stops
+        # firing requests that can only fail. Set DSH_PLATFORM_ACCOUNT_APIS=1 to opt back in.
+        platformAccountApis: !!js "process.env.DSH_PLATFORM_ACCOUNT_APIS === '1'"
 
     - id: credentials
       name: '@deepseek-ai/dsh-credentials-local'
@@ -217,6 +246,9 @@
     # Every CLI exit path drains by disposing the root on SIGINT/SIGTERM.
     - id: session-telemetry-otel
       name: '@deepseek-ai/dsh-session-telemetry-otel'
+      # Off in this deployment: its collector is a DeepSeek-owned host, and no
+      # session data should leave the intranet for it.
+      disabled: true
       config:
         mode: !!js process.env.DSH_TELEMETRY_MODE || 'FEEDBACK_ONLY'
         shutdownTimeoutMillis: 3000
@@ -481,19 +513,25 @@
     # search provider and Web fetch provider
     # menus on the Web search and fetch settings page select a provider for each
     # capability in place of these defaults.
+    # This deployment talks to the utoken (new-api) gateway only, so both DeepSeek
+    # Search paths are off: `web-search-deepseek` (Messages-format search) and
+    # `web-deepseek-api` (the `/v1/tools` Search and Fetch API) would otherwise call
+    # DeepSeek hosts with the account key. What remains is `web-fetch-http`, the
+    # anonymous local fetcher, which reaches only the destination the user names.
     - id: web
       name: '@deepseek-ai/dsh-web'
       config:
-        searchProvider: deepseek-search-api
         fetchProvider: http
 
     - id: web-search-deepseek
       name: '@deepseek-ai/dsh-web-search-deepseek'
       config:
         apiKeyEnv: DEEPSEEK_API_KEY
+      disabled: true
 
     - id: web-deepseek-api
       name: '@deepseek-ai/dsh-web-deepseek-api'
+      disabled: true
 
     - id: web-fetch-http
       name: '@deepseek-ai/dsh-web-fetch-http'
@@ -502,6 +540,8 @@
       name: '@deepseek-ai/dsh-tool-web'
       config:
         fetch: true
+        # No search provider is mounted, so `web_search` is not advertised at all.
+        search: false
         searchTimeoutMs: 60000
 
     - id: mcp-resources
@@ -542,9 +582,19 @@
     # The native DeepSeek adapter. No key or endpoint is inlined: both resolve per
     # request from the `llm-deepseek:` settings section over this entry, with the
     # key coming from the credential store below. Thinking defaults are a deployment
-    # choice.
+    # choice. Off in this deployment: its credential is a DeepSeek API key, and the
+    # account route below already reaches the utoken gateway with the sign-in key.
     - id: llm-deepseek
       name: '@deepseek-ai/dsh-llm-deepseek-api-key'
+      disabled: true
 
     - id: llm-deepseek-account
       name: '@deepseek-ai/dsh-llm-deepseek-account'
+      config:
+        # The Messages endpoint must be the deployment that minted the sign-in key. Left unset, the
+        # adapter falls back to the public DeepSeek API, which both rejects that key and receives it:
+        # the account service withholds the key for any origin other than inferenceOrigin, so a
+        # mismatched base URL would surface as a sign-in failure instead of a leaked credential.
+        # DEEPSEEK_BASE_URL retargets the model API on its own; the other two names are the same
+        # origin chain the account entry uses, so one variable moves sign-in and inference together.
+        baseURL: !!js "process.env.DEEPSEEK_BASE_URL || process.env.DSH_INFERENCE_ORIGIN || process.env.DSH_ACCOUNT_ORIGIN || 'https://token.yundashi.com'"

@@ -1,8 +1,8 @@
-# DeepSeek Harness Python SDK
+# 云大师 Agent Python SDK
 
 [English](README.md) | 中文
 
-用于以子进程方式驱动 DeepSeek Harness 的 Python 包。客户端 SDK 通过 stdio 使用按行分隔的 JSON-RPC 与内置运行时通信。
+用于以子进程方式驱动 云大师 Agent 的 Python 包。客户端 SDK 通过 stdio 使用按行分隔的 JSON-RPC 与内置运行时通信。
 
 ## 包
 

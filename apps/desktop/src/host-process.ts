@@ -4,7 +4,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { DesktopParentAuthentication } from './parent-authentication.ts'
 import { join } from 'node:path'
 import { z } from 'zod'
-import type { PlatformSession } from '@deepseek-ai/dsh-deepseek-account'
+import { isPrivateHttpHost, type PlatformSession } from '@deepseek-ai/dsh-deepseek-account'
 import { desktopNodeEnvironment } from './node-environment.ts'
 import { parsePluginOperationRecord, type PluginOperationRecord, type PluginOperationRunId } from '@deepseek-ai/dsh-plugin-manager/diagnostic'
 
@@ -92,6 +92,8 @@ function isDesktopHostEvent(message: unknown): message is DesktopHostEvent {
       if (!('userId' in session) || (session.userId !== null
         && (typeof session.userId !== 'string' || session.userId.length === 0))) return false
       if ('embeddedPageDist' in session && typeof session.embeddedPageDist !== 'string') return false
+      if ('usagePath' in session && (typeof session.usagePath !== 'string' || !session.usagePath.startsWith('/'))) return false
+      if ('topUpPath' in session && (typeof session.topUpPath !== 'string' || !session.topUpPath.startsWith('/'))) return false
       if ('requestHeaders' in session && (typeof session.requestHeaders !== 'object' || session.requestHeaders === null
         || Array.isArray(session.requestHeaders)
         || Object.entries(session.requestHeaders).some(([name, value]) => typeof value !== 'string'
@@ -99,8 +101,10 @@ function isDesktopHostEvent(message: unknown): message is DesktopHostEvent {
           || ['authorization', 'x-dsh-auth-token', 'host', 'content-length', 'transfer-encoding', 'connection', 'content-type'].includes(name)))) return false
       try {
         const url = new URL(session.origin)
+        const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
         return url.origin === session.origin && !url.username && !url.password
-          && (url.protocol === 'https:' || (url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)))
+          && (url.protocol === 'https:'
+            || (url.protocol === 'http:' && (loopback || isPrivateHttpHost(url.hostname))))
       } catch { return false }
     }
     case 'fatal':

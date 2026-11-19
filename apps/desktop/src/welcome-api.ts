@@ -6,7 +6,6 @@ import type { DesktopLocale } from './locale.ts'
 
 /** Private native welcome channels, installed only while its window exists. */
 export const WELCOME_IPC = {
-  saveApiKey: 'dsh-welcome:save-api-key',
   analytics: 'dsh-welcome:analytics',
   analyticsEnabled: 'dsh-welcome:analytics-enabled',
   skip: 'dsh-welcome:skip',
@@ -16,9 +15,6 @@ export const WELCOME_IPC = {
   state: 'dsh-welcome:state',
   takeNotice: 'dsh-welcome:take-notice',
 } as const
-
-/** Credential writes return a safe outcome without exposing Host diagnostics. */
-export type WelcomeSaveResult = { readonly ok: true } | { readonly ok: false }
 
 /** One-time notification retained by the main process until Welcome receives it. */
 export type WelcomeNotice = 'session-expired'
@@ -39,13 +35,6 @@ export interface WelcomeOperations {
   cancelSignIn(id: SignInAttemptId): Promise<AccountView>
   /** @param id - current waiting attempt whose authorization URL is copied to the system clipboard. */
   copySignInLink(id: SignInAttemptId): Promise<void>
-
-  /**
-   * Store the official provider's key before entering the workspace.
-   * @param value - validated, trimmed API key.
-   * @returns whether the write completed, without private error details.
-   */
-  saveApiKey(value: string): Promise<WelcomeSaveResult>
   /**
    * Enter the workspace without writing an onboarding-completion setting.
    * @returns completion after the workspace opens.

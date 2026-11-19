@@ -27,6 +27,11 @@ export interface ListedCatalogInput {
   readonly routeMaxTokens: number
   /** This build's semantic version. */
   readonly clientVersion: string
+  /**
+   * Offer listed ids this build's catalog does not know. A gateway listing is the authority on its
+   * own models, so its entries stay selectable without built-in knowledge.
+   */
+  readonly offerUnknownListed?: boolean
 }
 
 /** One resolved listed catalog. */
@@ -124,7 +129,8 @@ export function resolveListedCatalog(input: ListedCatalogInput): ListedCatalog {
   const refusals = new Map<string, CatalogRefusal>()
   const badges = new Map<string, LlmModelBadge>()
   for (const entry of input.listing) {
-    const refusal = gateOf(entry, supported.has(entry.id), input.clientVersion, problems)
+    const known = input.offerUnknownListed === true || supported.has(entry.id)
+    const refusal = gateOf(entry, known, input.clientVersion, problems)
     if (refusal !== undefined) {
       refusals.set(entry.id, refusal)
       continue

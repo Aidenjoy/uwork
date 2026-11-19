@@ -1,6 +1,6 @@
 /** Validated platform HTTP messages and restricted browser destinations. */
 import { z } from 'zod'
-import type { AccountNotificationEvent, AccountNotificationId, SignInErrorCode } from './types.ts'
+import type { AccountNotificationEvent, AccountNotificationId, AccountProfile, AccountUserId, SignInErrorCode } from './types.ts'
 
 /** Protocol errors expose a stable code, never a response body or authorization URL. */
 export class PlatformAuthError extends Error {
@@ -14,9 +14,43 @@ export class AccountUnauthorizedError extends PlatformAuthError {
 }
 
 /**
- * Accept HTTPS platform endpoints, or explicitly configured loopback development HTTP.
+ * Parse a canonical dotted-quad hostname into its octets.
+ * @param hostname - URL hostname as the WHATWG parser normalized it.
+ * @returns the four octets, or undefined when the host is not an IPv4 literal.
+ */
+function ipv4Octets(hostname: string): number[] | undefined {
+  const parts = hostname.split('.')
+  if (parts.length !== 4) return undefined
+  const octets: number[] = []
+  for (const part of parts) {
+    if (!/^(?:0|[1-9]\d{0,2})$/u.test(part)) return undefined
+    const octet = Number(part)
+    if (octet > 255) return undefined
+    octets.push(octet)
+  }
+  return octets
+}
+
+/**
+ * Whether a host is a private IPv4 literal usable over plain HTTP in a trusted intranet deployment.
+ * The check demands a whole literal address, not a prefix: the URL parser has already canonicalized
+ * every spelling of an IPv4 host, so a name such as `192.168.1.1.example.com` cannot pass here even
+ * though a prefix match would have accepted it.
+ * @param hostname - URL hostname, with or without IPv6 brackets.
+ * @returns whether the host falls in a private RFC 1918 range.
+ */
+export function isPrivateHttpHost(hostname: string): boolean {
+  const octets = ipv4Octets(hostname.startsWith('[') ? hostname.slice(1, -1) : hostname)
+  if (octets === undefined) return false
+  const [first = -1, second = -1] = octets
+  return first === 10 || (first === 192 && second === 168) || (first === 172 && second >= 16 && second <= 31)
+}
+
+/**
+ * Accept HTTPS platform endpoints, or plain HTTP on loopback/private intranet hosts when the
+ * deployment explicitly opts in (`allowLoopbackHttp`).
  * @param value - configured origin.
- * @param allowLoopbackHttp - development-only opt-in.
+ * @param allowLoopbackHttp - development/intranet opt-in for plain HTTP.
  * @param field - configuration field named in validation errors.
  * @returns normalized origin.
  */
@@ -25,35 +59,10 @@ export function platformOrigin(value: string, allowLoopbackHttp: boolean,
   const url = new URL(value)
   const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
   if (url.username || url.password || url.pathname !== '/' || url.search || url.hash
-    || !(url.protocol === 'https:' || (allowLoopbackHttp && loopback && url.protocol === 'http:'))) {
-    throw new Error(`account: ${field} must be an HTTPS origin or explicitly enabled loopback HTTP origin`)
+    || !(url.protocol === 'https:' || (allowLoopbackHttp && (loopback || isPrivateHttpHost(url.hostname)) && url.protocol === 'http:'))) {
+    throw new Error(`account: ${field} must be an HTTPS origin or an explicitly enabled loopback/private HTTP origin`)
   }
   return url.origin
-}
-
-/**
- * Validate platform-owned browser destinations without forwarding arbitrary URLs.
- * @param value - returned browser URL.
- * @param origin - configured platform origin.
- * @param path - fixed authorize or completion path.
- * @param rewriteOrigin - map validated browser pages to the configured development origin.
- * @returns normalized URL on the configured origin.
- */
-export function browserUrl(value: string, origin: string, path: string, rewriteOrigin = false): string {
-  let url: URL
-  try { url = new URL(value) } catch {
-    console.error('[deepseek-account] browser URL rejected', { path, reason: 'invalid-url' })
-    throw new PlatformAuthError('protocol')
-  }
-  const allowedOrigin = url.origin === origin || (rewriteOrigin && url.protocol === 'https:')
-  if (!allowedOrigin || url.pathname !== path || url.username || url.password || url.hash) {
-    console.error('[deepseek-account] browser URL rejected', {
-      path, originMismatch: !allowedOrigin, pathMismatch: url.pathname !== path,
-      hasCredentials: Boolean(url.username || url.password), hasFragment: Boolean(url.hash),
-    })
-    throw new PlatformAuthError('protocol')
-  }
-  return rewriteOrigin ? `${origin}${url.pathname}${url.search}` : url.href
 }
 
 /**
@@ -82,6 +91,133 @@ export const initialization = z.object({
 })
 /** Successful code exchange response. */
 export const exchange = z.object({ token: z.string().regex(/^[\x21-\x7e]+$/), authorized_url: z.url(), user: z.unknown().optional() })
+
+/** Desktop client id registered by the utoken (new-api) authorization server. */
+export const DESKTOP_CLIENT_ID = 'yun-token-desktop'
+/** Loopback callback path the desktop authorization server redirects to. */
+export const DESKTOP_CALLBACK_PATH = '/desktop-auth/callback'
+
+/**
+ * Account snapshot carried by the utoken desktop exchange and `/api/desktop-auth/me`
+ * (`desktopUserPayload()` in `controller/desktop_auth.go`). Credentials are never included.
+ * `display_name` may be an empty string.
+ */
+export const desktopUser = z.object({
+  id: z.number().int(),
+  username: z.string().max(20),
+  display_name: z.string(),
+  /** 1 regular user, 10 administrator, 100 super administrator. */
+  role: z.number().int(),
+  /** Billing group deciding model multipliers; `default` unless assigned. */
+  group: z.string(),
+})
+
+/**
+ * Successful utoken desktop code exchange. The server returns the language-model key as
+ * `language_api_key` (utoken vip branch, `controller/desktop_auth.go`). `user` is omitted
+ * entirely (no key, not null) when the server has no account for the grant.
+ */
+export const desktopToken = z.object({
+  access_token: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+  token_type: z.literal('Bearer'),
+  expires_in: z.number().int().positive(),
+  language_api_key: z.string().regex(/^sk-[A-Za-z0-9_-]+$/),
+  // Display-only snapshot: a shape drift must not block sign-in, so it degrades to "no profile".
+  user: desktopUser.optional().catch(undefined),
+})
+
+/**
+ * Project the utoken account snapshot into the UI profile, falling back to the login account
+ * when `display_name` is empty.
+ * @param user - validated desktop account snapshot.
+ * @returns UI account profile carrying the gateway identity fields.
+ */
+export function desktopProfile(user: z.infer<typeof desktopUser>): AccountProfile {
+  return {
+    id: String(user.id) as AccountUserId,
+    name: user.display_name || user.username,
+    contact: null,
+    username: user.username,
+    role: user.role,
+    group: user.group,
+  }
+}
+
+/**
+ * The language-model key carried by a desktop token response.
+ * @param token - validated desktop token response.
+ * @returns the `sk-`-prefixed key.
+ */
+export function desktopLanguageKey(token: z.infer<typeof desktopToken>): string {
+  return token.language_api_key
+}
+
+/**
+ * Build the browser authorization URL the utoken server expects for a desktop client.
+ * @param origin - validated authorization server origin.
+ * @param redirectUri - exact loopback callback the client is listening on.
+ * @param state - CSRF state value.
+ * @param challenge - PKCE S256 challenge.
+ * @returns absolute authorization URL.
+ */
+export function desktopAuthorizeUrl(origin: string, redirectUri: string, state: string, challenge: string): string {
+  const url = new URL('/api/desktop-auth/authorize', origin)
+  url.search = new URLSearchParams({
+    response_type: 'code', client_id: DESKTOP_CLIENT_ID, redirect_uri: redirectUri,
+    state, code_challenge: challenge, code_challenge_method: 'S256',
+  }).toString()
+  return url.href
+}
+
+/**
+ * Exchange a desktop authorization code for the access token and speech credential.
+ * @param origin - authorization server origin.
+ * @param code - one-time authorization code from the loopback callback.
+ * @param redirectUri - the same redirect URI used to authorize.
+ * @param verifier - PKCE verifier whose S256 challenge was sent.
+ * @param signal - attempt cancellation and timeout.
+ * @param headers - deployment headers for this origin.
+ * @returns the raw JSON payload, validated by the caller.
+ */
+export function exchangeDesktopToken(origin: string, code: string, redirectUri: string, verifier: string,
+  signal: AbortSignal, headers: Record<string, string>): Promise<unknown> {
+  return desktopRequest(`${origin}/api/desktop-auth/token`, {
+    method: 'POST',
+    headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code', client_id: DESKTOP_CLIENT_ID,
+      code, redirect_uri: redirectUri, code_verifier: verifier,
+    }).toString(),
+  }, signal)
+}
+
+/** Read and bound one utoken response that is plain JSON, not the platform envelope. */
+async function desktopRequest(url: string, init: RequestInit, signal: AbortSignal): Promise<unknown> {
+  const path = new URL(url).pathname
+  let response: Response
+  try {
+    response = await fetch(url, { ...init, redirect: 'error', signal })
+  } catch {
+    if (!callerCancelled(signal)) console.error('[deepseek-account] desktop request failed', { path, errorCode: 'no-response' })
+    throw new PlatformAuthError('no-response')
+  }
+  if (!response.ok || response.body === null) {
+    if (!callerCancelled(signal)) console.error('[deepseek-account] desktop request failed', { path, status: response.status, errorCode: 'network' })
+    await response.body?.cancel()
+    throw new PlatformAuthError('network')
+  }
+  const text = await response.text()
+  if (text.length > 4_096) {
+    if (!callerCancelled(signal)) console.error('[deepseek-account] desktop response rejected', { path, stage: 'body-limit' })
+    throw new PlatformAuthError('protocol')
+  }
+  try {
+    return JSON.parse(text)
+  } catch {
+    if (!callerCancelled(signal)) console.error('[deepseek-account] desktop response rejected', { path, stage: 'parse-json' })
+    throw new PlatformAuthError('protocol')
+  }
+}
 
 /**
  * Read one bounded platform response; non-cancellation failures emit non-secret diagnostics to stderr.

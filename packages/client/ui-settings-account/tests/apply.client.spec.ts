@@ -17,6 +17,7 @@ import { DeveloperToolsSettingsSchema as SettingsConfig } from '../../ui-setting
 import type { DesktopOnboardingInjected } from '../src/client/DesktopOnboardingEntry.tsx'
 import type { AccountSectionInjected } from '../src/client/AccountSection.tsx'
 import { CONTACT_CONFIG_GLOBAL } from '../src/contact-config.ts'
+import { PLATFORM_PAGES_GLOBAL } from '../src/platform-pages-config.ts'
 import { AccountPlatformHost } from '../src/client/AccountPlatformHost.tsx'
 import type { AccountPlatformHostInjected } from '../src/client/AccountPlatformHost.tsx'
 import { AccountQuotaNotice } from '../src/client/AccountQuotaNotice.tsx'
@@ -391,6 +392,27 @@ it('uses the Desktop stream origin and exposes the native platform bridge', asyn
   expect(mock.remote.account.startSignIn).toHaveBeenCalledWith(expect.objectContaining({ locale: 'en' }), 'http://localhost:9876', 'desktop')
 }, 60_000)
 
+
+it('sends Platform destinations to the system browser when the deployment disables the native view', async ({ start }) => {
+  // A console that authenticates with its own browser session cannot work inside the isolated
+  // native view, so the entries hand the configured destination to the browser and report the
+  // same return the native viewer would have.
+  vi.stubGlobal('dshDesktop', {})
+  const c = await start()
+  vi.stubGlobal('dshPlatform', { open: vi.fn(), setBounds: vi.fn(), close: vi.fn() })
+  vi.stubGlobal(PLATFORM_PAGES_GLOBAL, { embeddedPlatformPages: false })
+  await c.reload(SELF)
+  const actions = operations(c)
+  const host = injectedOf(platformHostEntry(c)!) as AccountPlatformHostInjected
+  const browser = vi.spyOn(window, 'open').mockImplementation(() => null)
+  c.mock.streams.push('account/watch', { type: 'snapshot', state: stored })
+  await vi.waitFor(() => { expect(actions.hooks.account.getSnapshot().view).toEqual(stored) })
+  const owner = vi.fn()
+  actions.openPlatformPage!('top-up', owner)
+  expect(browser).toHaveBeenCalledExactlyOnceWith(stored.links.topUpUrl, '_blank', 'noreferrer')
+  expect(owner).toHaveBeenCalledExactlyOnceWith('returned')
+  expect(host.hooks.page.getSnapshot()).toBeNull()
+}, 60_000)
 
 it('re-reads the account when the shared host returns from top-up, and not from usage or an absent page', async ({ start, mock }) => {
   vi.stubGlobal('dshDesktop', {})

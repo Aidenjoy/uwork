@@ -2,6 +2,11 @@
 #include <algorithm>
 #include <new>
 #include "restart-text.h"
+// Windows 10 20H1 defines this attribute; SDK 10.0.17763 and earlier omit it. The runtime
+// accepts the numeric value on every Windows 10 release that honours the attribute.
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+constexpr DWORD DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+#endif
 namespace restart_banner {
 constexpr wchar_t stateKey[] = L"HarnessInstaller.RestartBanner";
 constexpr int iconId = 0xffff, titleId = 76, bodyId = 1030;

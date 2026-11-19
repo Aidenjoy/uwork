@@ -1381,7 +1381,9 @@ describe('DeepSeekAdapter against a mock server', () => {
 
   it.each([
     [401, 'AUTH'],
-    [403, 'AUTH'],
+    // 403 is not authentication on this deployment: the gateway answers an exhausted quota or a
+    // plan restriction with it, so the provider message survives as a business rejection.
+    [403, 'PROVIDER_REJECTED'],
     [429, 'RATE_LIMIT'],
     [400, 'INVALID_REQUEST'],
     [500, 'SERVER'],
@@ -1543,8 +1545,8 @@ describe('DeepSeekAdapter against a mock server', () => {
     expect(result.finish.failure.message).toBe('DeepSeek Messages request failed (502)')
   })
 
-  it('maps unusual statuses to HTTP_<status>', () => {
-    expect(providerError({}, 418).code).toBe('HTTP_418')
+  it('maps an unclassified 4xx to a provider rejection instead of a bare status code', () => {
+    expect(providerError({}, 418).code).toBe('PROVIDER_REJECTED')
   })
 
   it('reports a failed endpoint connection as a transport failure', async () => {

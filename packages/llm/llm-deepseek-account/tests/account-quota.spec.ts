@@ -35,6 +35,7 @@ async function routeFor(token: string | undefined, provider: 'deepseek-account' 
   await ctx.plugin(LlmRuntime)
   ctx.provide('deepseekAccount', {
     resolveToken: async (_baseURL: string): Promise<string | undefined> => token,
+    resolveLanguageKey: async (_destination?: string): Promise<string | undefined> => token,
     rejectToken: async (_token: string): Promise<void> => {},
   } as DeepSeekAccount)
   await ctx.plugin(provider === 'deepseek-account' ? Account : ApiKey)
@@ -73,6 +74,7 @@ it('still expires the stored credential on an account-route 401', async () => {
   const rejectToken = vi.fn(async (_token: string): Promise<void> => {})
   ctx.provide('deepseekAccount', {
     resolveToken: async (_baseURL: string): Promise<string | undefined> => 'account-token',
+    resolveLanguageKey: async (_destination?: string): Promise<string | undefined> => 'account-token',
     rejectToken: (token: string): Promise<void> => rejectToken(token),
   } as DeepSeekAccount)
   await ctx.plugin(Account)

@@ -30,6 +30,7 @@ export const LLM_FAILURE_CODES = {
   EMPTY_RESPONSE: { retryChoice: true },
   FILES_API: {},
   IMAGE_OFFLOAD_REQUIRED: {},
+  INSUFFICIENT_QUOTA: {},
   INVALID_ADAPTER: {},
   INVALID_CATALOG: {},
   INVALID_CONFIG: {},
@@ -52,6 +53,7 @@ export const LLM_FAILURE_CODES = {
   NO_CREDENTIAL_STORE: {},
   NO_DISCOVERY: {},
   PI_AI_ERROR: {},
+  PROVIDER_REJECTED: {},
   QUOTA: { retryChoice: true },
   RATE_LIMIT: { retryChoice: true },
   REGISTRATION_DISPOSED: {},
@@ -86,6 +88,26 @@ export const QUOTA_EXCEEDED_CODE = 'QUOTA' satisfies BuiltinLlmFailureCode
 
 /** Account-token quota that can be replenished through the first-party billing page. */
 export const ACCOUNT_QUOTA_EXCEEDED_CODE = 'ACCOUNT_QUOTA' satisfies BuiltinLlmFailureCode
+
+/** Canonical provider-neutral code for an exhausted prepaid user quota reported by a provider. */
+export const INSUFFICIENT_QUOTA_CODE = 'INSUFFICIENT_QUOTA' satisfies BuiltinLlmFailureCode
+
+/**
+ * Canonical provider-neutral code for a business-policy rejection (quota, plan, route, or model
+ * entitlement) whose provider message is safe to show verbatim.
+ */
+export const PROVIDER_REJECTED_CODE = 'PROVIDER_REJECTED' satisfies BuiltinLlmFailureCode
+
+/** Provider codes that name an invalid or missing credential without ambiguity. */
+const AUTHENTICATION_FAILURE_CODES
+  = /^(?:invalid_api_key|invalid_token|invalid_authentication|authentication_required|invalid_credentials|unauthorized|invalid_client)$/i
+
+/** True only for signals that unambiguously mean invalid/missing credentials. */
+export function isAuthenticationFailure(status: number | undefined, type: string, code: string): boolean {
+  if (status === 401) return true
+  if (type === 'authentication_error' || type === 'permission_error') return true
+  return AUTHENTICATION_FAILURE_CODES.test(code)
+}
 
 /**
  * Canonical provider-neutral code for a response that completed normally but

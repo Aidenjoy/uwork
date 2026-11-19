@@ -34,6 +34,7 @@
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./locale/*.json": "./locale/*.json",
     "./src/*": "./src/*",
+    "./assets/*": "./lib/assets/*",
     "./package.json": "./package.json"
   },
   "files": [
@@ -41,6 +42,7 @@
     "locale/*.json",
     "lib/index.js",
     "lib/client.js",
+    "lib/assets",
     "cordis.patch.yml",
     "lib/owner-gateway/cli.js",
     "lib/retry-backoff-*.js",

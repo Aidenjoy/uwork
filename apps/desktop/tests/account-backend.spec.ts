@@ -18,6 +18,15 @@ it('projects only safe account fields and refuses non-browser authorization sche
   expect(() => accountView({ ...state, attempt: { ...state.attempt, errorCode: 'raw-server-message' } })).toThrow()
 })
 
+it('accepts private-intranet HTTP account links and authorization pages', () => {
+  const state = {
+    links: { usageUrl: 'http://10.1.2.3:3000/usage', topUpUrl: 'http://10.0.0.5:3000/top_up' },
+    status: 'signed-out',
+    attempt: { id: 'test', phase: 'waiting-browser', authorizeUrl: 'http://172.20.0.5:3000/login' },
+  }
+  expect(accountView(state)).toEqual(state)
+})
+
 it('accepts a no-response login failure without discarding the account projection', () => {
   const state = { status: 'signed-out', attempt: { id: 'test', phase: 'failed', errorCode: 'no-response' },
     links: { usageUrl: 'https://platform.deepseek.com/usage', topUpUrl: 'https://platform.deepseek.com/top_up' } }

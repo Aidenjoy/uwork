@@ -1,5 +1,6 @@
 /** Protocol invariants at JSON/SSE boundaries, including partial and failed responses. */
 import { describe, expect, it } from 'vitest'
+import { INSUFFICIENT_QUOTA_CODE, PROVIDER_REJECTED_CODE } from '@deepseek-ai/dsh-llm'
 import { translate } from '../src/translate.ts'
 import { parseSse } from '../src/sse.ts'
 import { providerError } from '../src/transport.ts'
@@ -120,14 +121,22 @@ describe('SSE framing and provider failures', () => {
     await expect(read(sse([{ type: 'error', error: { type: 'overloaded_error', message: 'busy' } }]))).rejects.toMatchObject({ code: 'SERVER' })
   })
   it.each([
-    [401, {}, 'AUTH'], [403, {}, 'AUTH'], [402, {}, 'QUOTA'], [429, {}, 'RATE_LIMIT'],
-    [400, {}, 'INVALID_REQUEST'], [413, {}, 'INVALID_REQUEST'], [503, {}, 'SERVER'], [404, {}, 'HTTP_404'],
+    [401, {}, 'AUTH'], [403, {}, PROVIDER_REJECTED_CODE], [402, {}, 'QUOTA'], [429, {}, 'RATE_LIMIT'],
+    [400, {}, 'INVALID_REQUEST'], [413, {}, 'INVALID_REQUEST'], [503, {}, 'SERVER'], [404, {}, PROVIDER_REJECTED_CODE],
     [undefined, { type: 'authentication_error' }, 'AUTH'], [undefined, { type: 'rate_limit_error' }, 'RATE_LIMIT'],
     [undefined, { type: 'invalid_request_error' }, 'INVALID_REQUEST'], [undefined, {}, 'SERVER'],
+    [403, { type: 'authentication_error' }, 'AUTH'], [403, { code: 'invalid_api_key' }, 'AUTH'],
+    [403, { type: 'new_api_error', message: '有有效的双 Token 套餐，但当前请求路径不支持双 Token 扣减' }, PROVIDER_REJECTED_CODE],
     [400, { message: 'maximum context length exceeded' }, 'CONTEXT_WINDOW_EXCEEDED'],
     [400, { message: 'insufficient balance' }, 'QUOTA'],
+    [403, { code: 'insufficient_user_quota', message: '用户额度不足, 剩余额度: ¥0.000000' }, INSUFFICIENT_QUOTA_CODE],
+    [403, { type: 'new_api_error', message: '用户额度不足, 剩余额度: ¥0.000000' }, INSUFFICIENT_QUOTA_CODE],
   ])('classifies status %s and error %j', (status, error, code) => {
     expect(providerError({ error }, status)).toMatchObject({ code })
+  })
+  it('keeps the provider rejection message verbatim for display', () => {
+    const text = '有有效的双 Token 套餐，但当前请求路径不支持双 Token 扣减'
+    expect(providerError({ error: { type: 'new_api_error', message: text } }, 403).message).toBe(text)
   })
   it('retains request identity and valid Retry-After without inventing missing counters', () => {
     expect(providerError(null, 429, new Headers({ 'retry-after': '2', 'request-id': 'r1' })).failure).toMatchObject({ requestId: 'r1', providerRetryAfterMs: 2000 })

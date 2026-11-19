@@ -4,7 +4,7 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import { afterEach, describe, expect, it } from 'vitest'
 import { APP_IDENTITY } from '@deepseek-ai/dsh-llm'
 import { deadline } from '@deepseek-ai/dsh-timeout'
-import { LISTING_TIMEOUT, MAX_BADGE_TEXT_LENGTH, parseModelListing, requestModelListing } from '../src/listing.ts'
+import { LISTING_TIMEOUT, MAX_BADGE_TEXT_LENGTH, modelListingURL, parseModelListing, requestModelListing } from '../src/listing.ts'
 import type { ListedCapabilities } from '../src/listing.ts'
 
 /** The listing the service returned to an account token on 2026-09-24. */
@@ -28,19 +28,55 @@ const LISTING = {
 const MESSAGES = { api_capabilities: { anthropic_messages: {} } }
 const only = (row: object) => parseModelListing({ data: [{ id: 'm', ...row }] }).entries[0]
 
+describe('modelListingURL', () => {
+  it.each([
+    ['http://10.1.2.3:3000', 'http://10.1.2.3:3000/v1/models'],
+    ['http://10.1.2.3:3000/', 'http://10.1.2.3:3000/v1/models'],
+    ['http://10.1.2.3:3000/v1', 'http://10.1.2.3:3000/v1/models'],
+    ['http://10.1.2.3:3000/v1/', 'http://10.1.2.3:3000/v1/models'],
+    ['https://api.deepseek.com/anthropic', 'https://api.deepseek.com/models'],
+  ])('lists %s at %s', (baseURL, expected) => {
+    expect(modelListingURL(baseURL)).toBe(expected)
+  })
+})
+
+describe('parseModelListing of a gateway listing', () => {
+  const GATEWAY = { data: [{ id: 'kimi-k3', object: 'model', owned_by: 'volcengine', supported_endpoint_types: ['openai'] }] }
+
+  it('serves an entry that declares endpoint types instead of Messages capabilities', () => {
+    expect(parseModelListing(GATEWAY)).toEqual({
+      skipped: 0, gateway: true,
+      entries: [{ id: 'kimi-k3', requirement: { kind: 'none' }, selfDescribed: false, capabilities: { usable: true, facts: { inputModalities: ['text'] } } }],
+    })
+  })
+
+  it('keeps an entry usable when the gateway lists no endpoint type this build chats over', () => {
+    expect(only({ supported_endpoint_types: ['embeddings'] })?.capabilities).toEqual({
+      usable: false, reason: 'declares no api_capabilities.anthropic_messages',
+    })
+  })
+
+  it('is not a gateway listing when any entry declares its own capabilities', () => {
+    const listing = parseModelListing({ data: [...GATEWAY.data, { id: 'deepseek-flash', ...MESSAGES }] })
+    expect(listing.gateway).toBe(false)
+    expect(listing.entries.map(entry => entry.selfDescribed)).toEqual([false, true])
+  })
+})
+
 describe('parseModelListing', () => {
   it('decodes the service listing', () => {
     expect(parseModelListing(LISTING)).toEqual({
       skipped: 0,
+      gateway: false,
       entries: [
         {
-          id: 'deepseek-flash', name: 'DeepSeek-V4.1-Flash', requirement: { kind: 'none' },
+          id: 'deepseek-flash', name: 'DeepSeek-V4.1-Flash', requirement: { kind: 'none' }, selfDescribed: true,
           capabilities: { usable: true, facts: {
             inputModalities: ['text', 'image'], contextWindow: 1_048_576, maxOutputTokens: 393_216, systemPromptUpdate: 'in-history',
           } },
         },
         {
-          id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', requirement: { kind: 'none' },
+          id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', requirement: { kind: 'none' }, selfDescribed: true,
           capabilities: { usable: true, facts: {
             inputModalities: ['text'], contextWindow: 1_048_576, maxOutputTokens: 393_216, systemPromptUpdate: 'leading-only',
           } },
@@ -52,7 +88,10 @@ describe('parseModelListing', () => {
   it('skips rows without a usable id and repeated ids', () => {
     const listing = parseModelListing({ data: [null, 1, { id: '' }, { id: 'a', name: '' }, { id: 'a' }] })
     expect(listing.skipped).toBe(4)
-    expect(listing.entries).toEqual([{ id: 'a', requirement: { kind: 'none' }, capabilities: expect.objectContaining({ usable: false }) as ListedCapabilities }])
+    expect(listing.gateway).toBe(false)
+    expect(listing.entries).toEqual([{
+      id: 'a', requirement: { kind: 'none' }, selfDescribed: false, capabilities: expect.objectContaining({ usable: false }) as ListedCapabilities,
+    }])
   })
 
   it.each([{}, [], null, { data: {} }, { data: [] }, { data: [{ id: '' }] }])('rejects %j as a listing', (body) => {

@@ -20,6 +20,10 @@ import { dshHomePath, dshPath, resolveDshHome } from '@deepseek-ai/dsh-home-path
 import { createLaunchEnvironmentSnapshot, type LaunchEnvironmentSnapshot } from '@deepseek-ai/dsh-launch-environment'
 export { readBundlePatches, readProfilePatches, resolveTelemetryPatch, type ProfileContext, type ProfilePnpmInvocation } from './profile-context.ts'
 export { sanitizeProfile } from './profile-sanitize.ts'
+export {
+  applyLaunchConfig, LAUNCH_CONFIG_FILE,
+  type LaunchConfigApplication, type LaunchConfigOptions,
+} from './launch-config.ts'
 export { getDshRuntimeVersion, evaluatePluginCompatibility, pluginCompatibilityWarning, type PluginCompatibility } from './plugin-compatibility.ts'
 export {
   PROFILE_COMPATIBILITY_FILENAME, readProfileCompatibility, readProfileVersionExemptions,

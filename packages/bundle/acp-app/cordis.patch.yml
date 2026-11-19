@@ -16,8 +16,10 @@
       name: '@deepseek-ai/dsh-acp'
       inject: [acpAppStartup]
       config:
-        provider: deepseek-official
-        model: deepseek-v4-flash
+        # The API-key route is disabled in this deployment; the account route reaches the
+        # utoken gateway with the signed-in key.
+        provider: deepseek-account
+        model: !!js "process.env.DSH_DEFAULT_MODEL || 'deepseek-v4-flash'"
 
 - id: hmr
   disabled: true

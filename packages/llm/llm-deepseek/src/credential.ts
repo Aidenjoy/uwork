@@ -46,6 +46,16 @@ export async function resolveDeepSeekAccountToken(ctx: Context, endpoint: string
 }
 
 /**
+ * Read the long-lived language key issued by the utoken desktop exchange for model requests.
+ * @param ctx - context providing the optional account service.
+ * @param destination - request destination or API base URL the key would authenticate.
+ * @returns the `sk-`-prefixed key, or undefined without a signed-in account or for a foreign origin.
+ */
+export async function resolveDeepSeekLanguageKey(ctx: Context, destination?: string): Promise<string | undefined> {
+  return await ctx.get('deepseekAccount')?.resolveLanguageKey(destination)
+}
+
+/**
  * Invalidate the account token rejected by a request, without clearing a newer sign-in. Removal failure is contained
  * so callers can report the original request failure; the account service owns in-memory invalidation and persistence.
  * @param ctx - context providing the optional account service.

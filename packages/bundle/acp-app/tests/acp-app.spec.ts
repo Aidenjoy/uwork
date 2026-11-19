@@ -18,7 +18,12 @@ describe('dsh-acp-app bundle', () => {
     const patches = parseEntryYaml(readFileSync(resolve(root, manifest.dsh!.bundle!.patch!), 'utf8')) as Array<{
       id?: string
       disabled?: boolean
-      insert?: Array<{ config?: { model?: string; provider?: string }; id?: string; inject?: string[]; name?: string }>
+      insert?: Array<{
+        config?: { model?: string | { __jsExpr: string }; provider?: string }
+        id?: string
+        inject?: string[]
+        name?: string
+      }>
     }>
     expect(patches.find(patch => patch.id === 'hmr')).toMatchObject({ disabled: true })
     expect(patches.find(patch => patch.id === 'session-title-llm')).toMatchObject({ disabled: true })
@@ -26,7 +31,8 @@ describe('dsh-acp-app bundle', () => {
     expect(rows.find(row => row.id === 'acp-app-startup')?.name).toBe('@deepseek-ai/dsh-acp-app')
     expect(rows.find(row => row.id === 'acp')).toMatchObject({
       inject: ['acpAppStartup'],
-      config: { provider: 'deepseek-official', model: 'deepseek-v4-flash' },
+      // The account route is the only mounted model route; the seed id follows DSH_DEFAULT_MODEL.
+      config: { provider: 'deepseek-account', model: { __jsExpr: "process.env.DSH_DEFAULT_MODEL || 'deepseek-v4-flash'" } },
     })
   })
 })

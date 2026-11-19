@@ -36,7 +36,10 @@
 - insert:
     - id: desktop-product-telemetry
       name: '@deepseek-ai/dsh-host-product-telemetry-otel'
-      disabled: !!js "ctx.get('profileContext')?.name !== 'desktop'"
+      # Mounted on Desktop only, and only once an operator supplies a collector: the
+      # plugin's own default is a DeepSeek-owned host, so leaving the endpoint unset
+      # must not reach it.
+      disabled: !!js "ctx.get('profileContext')?.name !== 'desktop' || process.env.DSH_PRODUCT_ANALYTICS_OTLP_URL === undefined"
       config:
         scheduledDelayMillis: 30000
         timeoutMillis: 15000
@@ -48,7 +51,9 @@
 
     - id: product-analytics
       name: '@deepseek-ai/dsh-client-product-analytics'
-      disabled: !!js "ctx.get('profileContext')?.name !== 'desktop'"
+      # Paired with the row above: no analytics decisions leave the machine without
+      # an operator-collected endpoint.
+      disabled: !!js "ctx.get('profileContext')?.name !== 'desktop' || process.env.DSH_PRODUCT_ANALYTICS_OTLP_URL === undefined"
       config:
         enabled: true
         appVersion: !!js process.env.DSH_CLIENT_VERSION
@@ -139,6 +144,13 @@
     # reports an actionable error when its settings-domain provider is absent.
     - id: ui-settings-account
       name: '@deepseek-ai/dsh-client-ui-settings-account'
+      config:
+        # utoken's console authenticates with the browser session created when the Desktop client
+        # sent the user to its authorize page, and never reads the embedded page bridge, so a native
+        # view of /usage-logs or /wallet would land on its sign-in page. Open those destinations in
+        # the system browser, where that session lives. DSH_ACCOUNT_EMBEDDED_PAGES=1 restores the
+        # native view for a console that does read the bridge.
+        embeddedPlatformPages: !!js "process.env.DSH_ACCOUNT_EMBEDDED_PAGES === '1'"
 
     - id: ui-account-notifications
       name: '@deepseek-ai/dsh-client-ui-account-notifications'

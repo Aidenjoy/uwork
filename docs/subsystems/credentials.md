@@ -343,6 +343,14 @@ async getPlatformSession(): Promise<PlatformSession | null>
 async resolveToken(url: string): Promise<string | undefined>
 
 /**
+ * Read the long-lived language-model key issued by the utoken desktop exchange. It is the
+ * credential for model and speech requests, kept apart from the 10-minute access token.
+ * @returns the `sk-`-prefixed key, or undefined while signed out or when the record was
+ * issued by a different authorization origin.
+ */
+async resolveLanguageKey(): Promise<string | undefined>
+
+/**
  * Join an active attempt or start browser authorization.
  * @param client - identity of the requesting UI; a new attempt captures it, and joining retains the original attempt's identity.
  * @param callbackOrigin - browser-accessible loopback HTTP origin, including any SSH local port.

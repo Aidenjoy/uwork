@@ -7,9 +7,19 @@
 #include <objidl.h>
 #include <commctrl.h>
 #include <dwmapi.h>
-#include <gdiplus.h>
-#include <new>
+// NOMINMAX above hides the compiler min/max macros that SDK 10.0.17763's GdiplusTypes.h
+// still calls unqualified; newer SDKs use std::min/std::max directly. Importing them here
+// keeps this translation unit compiling against either SDK.
 #include <algorithm>
+using std::max;
+using std::min;
+// SDK 10.0.17763's GDI+ headers declare parameters that hide same-named members, so /W4 /WX
+// rejects them before our own code is parsed. Scope the suppression to the include only.
+#pragma warning(push)
+#pragma warning(disable: 4458)
+#include <gdiplus.h>
+#pragma warning(pop)
+#include <new>
 static HRESULT ApplyInstallerDwmFrame(HWND window) {
     // DWM retains native transitions; WM_NCCALCSIZE removes the visible caption.
     SetWindowLongW(window, GWL_STYLE, GetWindowLongW(window, GWL_STYLE) | WS_THICKFRAME | WS_CAPTION);

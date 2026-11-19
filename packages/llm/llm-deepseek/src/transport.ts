@@ -1,7 +1,7 @@
 /** Normalize HTTP and in-band Messages errors into provider-neutral failures. */
 
 import { brandString } from '@deepseek-ai/dsh-brand'
-import { isContextWindowExceededError, isQuotaExceededError, LlmError, type ProviderRequestId } from '@deepseek-ai/dsh-llm'
+import { isAuthenticationFailure, isContextWindowExceededError, isQuotaExceededError, LlmError, PROVIDER_REJECTED_CODE, type ProviderRequestId } from '@deepseek-ai/dsh-llm'
 import type { BuiltinLlmFailureCode } from '@deepseek-ai/dsh-llm'
 
 /** Read only provider error fields used by bounded Files recovery.
@@ -28,12 +28,17 @@ export function providerError(raw: unknown, status: number | undefined, headers?
   const type = typeof error.type === 'string' ? error.type : ''
   const detail = `${type} ${typeof error.code === 'string' ? error.code : ''} ${message}`
   let code: BuiltinLlmFailureCode
-  if (status === 401 || status === 403 || ['authentication_error', 'permission_error'].includes(type)) code = 'AUTH'
+  const providerCode = typeof error.code === 'string' ? error.code : ''
+  // utoken reports an exhausted user quota with HTTP 403. Its /v1/messages
+  // body carries only a Chinese message (no `code`), so match the text too.
+  if (providerCode === 'insufficient_user_quota' || /用户额度不足|insufficient[\s_-]+user[\s_-]+quota/i.test(detail)) code = 'INSUFFICIENT_QUOTA'
+  else if (isAuthenticationFailure(status, type, providerCode)) code = 'AUTH'
   else if (isQuotaExceededError(detail) || status === 402) code = 'QUOTA'
   else if (status === 429 || type === 'rate_limit_error') code = 'RATE_LIMIT'
   else if (isContextWindowExceededError(detail)) code = 'CONTEXT_WINDOW_EXCEEDED'
   else if (status === 400 || status === 413 || type === 'invalid_request_error') code = 'INVALID_REQUEST'
   else if ((status !== undefined && status >= 500) || ['api_error', 'overloaded_error'].includes(type)) code = 'SERVER'
+  else if (status !== undefined && status >= 400 && status < 500) code = PROVIDER_REJECTED_CODE
   else code = status === undefined ? 'SERVER' : `HTTP_${status}`
   const retry = headers?.get('retry-after')
   const delay = retry == null ? NaN : /^\d+(?:\.\d+)?$/u.test(retry) ? Number(retry) * 1000 : Date.parse(retry) - Date.now()

@@ -2,7 +2,7 @@
 import { randomBytes, randomUUID, createHash, timingSafeEqual } from 'node:crypto'
 import type { ServerResponse } from 'node:http'
 import type {} from '@deepseek-ai/dsh-host-webserver'
-import { arch, platform, release } from 'node:os'
+import { platform, release } from 'node:os'
 import { promises as streamPromises } from 'node:stream'
 import { Context, Service } from '@deepseek-ai/cordis'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
@@ -13,12 +13,13 @@ import { mergePlatformCookies, platformClientHeaders, platformWireLocale } from 
 import { type AccountNotification, type AccountNotificationBatch, type AccountNotificationEvent, type AccountNotificationId, type AccountClientMetadata, type AccountDetails, type AccountUserId, type AccountView, type AccountUpdate, type PlatformSession, type SignInAttemptId, type SignInAttemptView } from './types.ts'
 import { credentialKey } from '@deepseek-ai/dsh-credentials'
 import type { AuthorizationSession } from '@deepseek-ai/dsh-authorization'
-import { profile, readAccountDetail } from './details.ts'
+import { readAccountDetail } from './details.ts'
 import { readNotificationContent, readNotifications, sendNotificationEvent } from './notifications.ts'
 import { revokeAccount, type LogoutRetryPolicy } from './logout.ts'
-import { AccountUnauthorizedError, PlatformAuthError, platformHeaders, platformOrigin, browserUrl, requestPlatform, initialization, exchange, loginOrigin } from './protocol.ts'
+import { AccountUnauthorizedError, PlatformAuthError, platformHeaders, platformOrigin, loginOrigin, desktopAuthorizeUrl, exchangeDesktopToken, desktopToken, desktopLanguageKey, desktopProfile, desktopUser, DESKTOP_CALLBACK_PATH } from './protocol.ts'
 
 export type * from './types.ts'
+export { isPrivateHttpHost } from './protocol.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context { deepseekAccount: DeepSeekAccount }
@@ -33,8 +34,15 @@ declare module '@deepseek-ai/cordis' {
 
 const KEY = credentialKey('deepseek-account-platform', 'default')
 const DEVICE = credentialKey('deepseek-account-platform', 'device')
+/** Long-lived speech credential from the utoken desktop exchange; kept apart from the 10-minute access token. */
+const SPEECH = credentialKey('deepseek-account-platform', 'speech')
+/** Account identity snapshot from the utoken desktop exchange; survives restarts so the gateway
+ * profile renders without a DeepSeek profile endpoint. Cleared with the grant. */
+const PROFILE = credentialKey('deepseek-account-platform', 'profile')
 const grant = z.object({ version: z.literal(1), token: z.string().min(1), issuer: z.url() })
 const device = z.object({ id: z.uuid() })
+const speechGrant = z.object({ version: z.literal(1), key: z.string().min(1), issuer: z.url() })
+const profileGrant = z.object({ version: z.literal(1), issuer: z.url(), user: desktopUser })
 
 /** Deployment-specific platform and request deadlines. */
 export interface Config {
@@ -46,12 +54,20 @@ export interface Config {
   desktopPlatform?: 'darwin' | 'win32' | null
   /** Optional frontend deployment selector for embedded Usage and Top-up pages. */
   embeddedPageDist?: string
+  /** Path of the usage page on platformOrigin; defaults to the official `/usage`. Gateway deployments
+   * such as utoken serve it under their own console route (`/usage-logs`). */
+  usagePath?: string
+  /** Path of the top-up page on platformOrigin; defaults to the official `/top_up`. utoken serves its
+   * wallet at `/wallet`. */
+  topUpPath?: string
   /** Exact HTTP(S) origin allowed to receive account tokens for inference and files. */
   inferenceOrigin?: string
   /** Allow HTTP only on loopback for the development Mock. */
   allowLoopbackHttp?: boolean
-  /** Map authorization and completion pages to platformOrigin for private development proxies. */
-  rewriteBrowserOrigin?: boolean
+  /** Whether platformOrigin serves the DeepSeek profile/balance endpoints (/auth-api/v0/users/current,
+   * /api/v0/users/get_user_summary). Gate these reads off for gateway deployments such as utoken that
+   * only implement desktop login/inference; those paths do not exist there and every call fails. */
+  platformAccountApis?: boolean
   /** Host-only headers for Platform and notification APIs; account authorization cannot be overridden. */
   requestHeaders?: Record<string, string>
   /** Overrides for profile, balance, notification and embedded Platform requests;
@@ -75,9 +91,11 @@ const Config = Schema.object({
   harnessOrigin: Schema.string().default('https://harness.deepseek.com'),
   desktopPlatform: Schema.union([Schema.const('darwin'), Schema.const('win32'), Schema.const(null)]).default(null),
   embeddedPageDist: Schema.string().default(''),
+  usagePath: Schema.string().default('/usage'),
+  topUpPath: Schema.string().default('/top_up'),
   inferenceOrigin: Schema.string().default('https://api.deepseek.com'),
   allowLoopbackHttp: Schema.boolean().default(false),
-  rewriteBrowserOrigin: Schema.boolean().default(false),
+  platformAccountApis: Schema.boolean().default(true),
   requestHeaders: Schema.dict(Schema.string().role('secret')).default({}),
   accountRequestHeaders: Schema.dict(Schema.string().role('secret')).default({}),
   requestTimeoutMs: Schema.number().min(1).max(120_000).default(30_000),
@@ -86,6 +104,27 @@ const Config = Schema.object({
   logoutRetryDelayMs: Schema.number().min(1).max(60_000).default(1_000),
   attemptTimeoutMs: Schema.number().min(1).max(3_600_000).default(600_000),
 })
+
+/**
+ * Reject a page path that would leave the configured platform origin. A deployment may only move these
+ * destinations inside its own site, never point them at a second authority.
+ * @param value - configured path.
+ * @param name - configuration key reported in the error.
+ * @returns the same path with its query preserved.
+ */
+function accountPagePath(value: string, name: string): string {
+  const base = 'http://account-page.invalid'
+  let parsed: URL
+  try {
+    parsed = new URL(value, base)
+  } catch {
+    throw new Error(`account: ${name} must be an absolute path on the platform origin`)
+  }
+  if (parsed.origin !== base || !value.startsWith('/')) {
+    throw new Error(`account: ${name} must be an absolute path on the platform origin`)
+  }
+  return `${parsed.pathname}${parsed.search}`
+}
 
 interface Attempt {
   locale: 'en_US' | 'zh_CN'
@@ -96,10 +135,12 @@ interface Attempt {
   running: Promise<void>
   origin: string
   loginSource: 'web' | 'desktop'
-  disposeCallback?: () => boolean
+  /** CSRF state carried by the authorization request; the callback route matches on it. */
+  state?: string | undefined
+  /** Handoff for the authorization code the callback route delivers. */
+  code?: PromiseWithResolvers<string> | undefined
   callback?: ServerResponse
   initialProfile?: { token: string; value: AccountDetails['profile'] }
-  completionUrl?: string
 }
 
 /** Account login, credentials, and client-safe Remote operations. */
@@ -108,9 +149,19 @@ export class DeepSeekAccount extends TypertRemoteService {
   static Config = Config
   private readonly origin: string
   private readonly harnessOrigin: string
+  /**
+   * Whether the notification service may judge this deployment's grant. A service only speaks for the
+   * tokens its own authority minted: DeepSeek's harness answers every token it did not issue with
+   * `40003`, so asking it from a deployment that signs in elsewhere would revoke a valid login.
+   */
+  private readonly harnessMayJudgeGrant: boolean
+  /** Whether platformOrigin serves the DeepSeek-only profile/balance account APIs. */
+  private readonly platformAccountApis: boolean
   private readonly embeddedPageDist: string
+  /** Platform page destinations the account panel links to and the Desktop view embeds. */
+  private readonly usagePath: string
+  private readonly topUpPath: string
   private readonly inferenceOrigin: string
-  private readonly rewriteBrowserOrigin: boolean
   private readonly platform: 'darwin' | 'win32' | null
   private readonly requestHeaders: Record<string, string>
   private readonly accountRequestHeaders: Record<string, string>
@@ -137,15 +188,21 @@ export class DeepSeekAccount extends TypertRemoteService {
     installAccountTaskCancellation(ctx)
     const resolved = Config(config)
     this.embeddedPageDist = resolved.embeddedPageDist
+    this.usagePath = accountPagePath(resolved.usagePath, 'usagePath')
+    this.topUpPath = accountPagePath(resolved.topUpPath, 'topUpPath')
+    this.platformAccountApis = resolved.platformAccountApis
     this.origin = platformOrigin(resolved.platformOrigin, resolved.allowLoopbackHttp, 'platformOrigin')
     this.harnessOrigin = platformOrigin(resolved.harnessOrigin, resolved.allowLoopbackHttp, 'harnessOrigin')
+    // Same authority (an unconfigured harness inherits the account deployment, an explicit one that
+    // shares its origin), or the official pair the defaults describe.
+    this.harnessMayJudgeGrant = new URL(this.harnessOrigin).origin === this.origin
+      || (this.origin === 'https://platform.deepseek.com' && this.harnessOrigin === 'https://harness.deepseek.com')
     const inference = new URL(resolved.inferenceOrigin)
     if (!['http:', 'https:'].includes(inference.protocol) || inference.username || inference.password
       || inference.pathname !== '/' || inference.search || inference.hash) {
       throw new Error('account: inferenceOrigin must be an HTTP(S) origin without credentials, path, query or fragment')
     }
     this.inferenceOrigin = inference.origin
-    this.rewriteBrowserOrigin = resolved.rewriteBrowserOrigin
     this.platform = resolved.desktopPlatform
     this.requestHeaders = platformHeaders(resolved.requestHeaders)
     const accountHeaders = platformHeaders(resolved.accountRequestHeaders)
@@ -173,6 +230,7 @@ export class DeepSeekAccount extends TypertRemoteService {
       this.invalidateDetails()
       this.changed('credentials-changed')
     })
+    this.installCallbackRoute(ctx)
     ctx.effect(() => async () => {
       this.closed = true
       this.logoutLifetime.abort()
@@ -213,7 +271,7 @@ export class DeepSeekAccount extends TypertRemoteService {
       status: record === undefined ? 'signed-out' : 'credential-stored',
       // Credential removal can notify watchers before sign-out finishes clearing the attempt.
       attempt: record === undefined && attempt?.phase === 'succeeded' ? null : attempt,
-      links: { usageUrl: new URL('/usage', this.origin).href, topUpUrl: new URL('/top_up', this.origin).href },
+      links: { usageUrl: new URL(this.usagePath, this.origin).href, topUpUrl: new URL(this.topUpPath, this.origin).href },
     }
   }
 
@@ -226,6 +284,9 @@ export class DeepSeekAccount extends TypertRemoteService {
    */
   @Remote
   async getProfile(client: AccountClientMetadata): Promise<AccountDetails['profile'] | null> {
+    // Gateway deployments (e.g. utoken) have no DeepSeek profile endpoint; serve the account
+    // snapshot captured at sign-in instead of issuing a request that can only fail.
+    if (!this.platformAccountApis) return this.readProfileSnapshot()
     const lifetime = this.detailsLifetime
     const stored = await this.readCurrentGrant(lifetime)
     if (stored === null || lifetime.signal.aborted) return null
@@ -245,6 +306,8 @@ export class DeepSeekAccount extends TypertRemoteService {
    */
   @Remote
   getBalance(client: AccountClientMetadata): Promise<AccountDetails['balance'] | null> {
+    // Gateway deployments (e.g. utoken) do not serve the DeepSeek-only account APIs.
+    if (!this.platformAccountApis) return Promise.resolve({ status: 'failed' })
     return this.getDetail('balance', this.detailHeaders(client))
   }
 
@@ -255,6 +318,8 @@ export class DeepSeekAccount extends TypertRemoteService {
    */
   @Remote
   async getNotifications(client: AccountClientMetadata): Promise<AccountNotificationBatch | null> {
+    // A notification service that did not mint this grant cannot report on it; asking would revoke the login.
+    if (!this.harnessMayJudgeGrant) return null
     const lifetime = this.detailsLifetime
     const headers = this.detailHeaders(client)
     const stored = await this.readCurrentGrant(lifetime)
@@ -282,6 +347,7 @@ export class DeepSeekAccount extends TypertRemoteService {
   @Remote
   async getNotificationContent(id: AccountNotificationId,
     client: AccountClientMetadata): Promise<AccountNotification | null> {
+    if (!this.harnessMayJudgeGrant) return null
     const lifetime = this.detailsLifetime
     const headers = this.detailHeaders(client)
     const stored = await this.readCurrentGrant(lifetime)
@@ -310,6 +376,7 @@ export class DeepSeekAccount extends TypertRemoteService {
   @Remote
   async reportNotificationEvent(id: AccountNotificationId,
     event: AccountNotificationEvent, client: AccountClientMetadata): Promise<boolean> {
+    if (!this.harnessMayJudgeGrant) return false
     const lifetime = this.detailsLifetime
     const headers = this.detailHeaders(client)
     const stored = await this.readCurrentGrant(lifetime)
@@ -343,6 +410,26 @@ export class DeepSeekAccount extends TypertRemoteService {
     if (previous !== (profile.value.id || null)) this.changed('identity')
   }
 
+  /**
+   * Read the account snapshot persisted by the desktop exchange. The snapshot is bound to the
+   * configured origin so a deployment switch cannot surface another environment's identity.
+   * @returns the cached profile, null while signed out, or a failed outcome without a snapshot.
+   */
+  private async readProfileSnapshot(): Promise<AccountDetails['profile'] | null> {
+    const lifetime = this.detailsLifetime
+    const stored = await this.readCurrentGrant(lifetime)
+    if (stored === null || lifetime.signal.aborted) return null
+    const cached = this.lastProfile?.token === stored.token ? this.lastProfile.profile : undefined
+    if (cached !== undefined) return cached
+    const record = await this.ctx.credentials.readRecord(PROFILE)
+    if (record?.kind !== 'grant') return { status: 'failed' }
+    const parsed = profileGrant.safeParse(record.payload)
+    if (!parsed.success || parsed.data.issuer !== this.origin) return { status: 'failed' }
+    const value: AccountDetails['profile'] = { status: 'ready', value: desktopProfile(parsed.data.user) }
+    this.cacheProfile(stored.token, value)
+    return value
+  }
+
   private async getDetail<K extends keyof AccountDetails>(field: K, headers: Record<string, string>,
     captured?: { lifetime: AbortController; stored: z.infer<typeof grant> }): Promise<AccountDetails[K] | null> {
     const lifetime = captured?.lifetime ?? this.detailsLifetime
@@ -370,18 +457,37 @@ export class DeepSeekAccount extends TypertRemoteService {
   }
 
   /**
-   * Remove an inference-rejected token only while it still matches the stored login.
+   * Remove an inference-rejected credential: the language key on its own, or the whole grant when the
+   * access token itself was rejected. A rejected key does not prove the login is gone.
    * @param token - token captured by the rejected inference request.
-   * @returns after matching credentials are removed and the expiry notification is emitted.
+   * @returns after matching credentials are removed and, for a rejected grant, expiry is notified.
    */
   async rejectToken(token: string): Promise<void> {
     const lifetime = this.detailsLifetime
     const stored = await this.readCurrentGrant(lifetime)
+    // Match the rejected value against the two stored credentials instead of guessing from its shape:
+    // a key that is not the grant is the independently revocable language key.
+    const speech = await this.ctx.credentials.readRecord(SPEECH)
+    const parsedSpeech = speech?.kind === 'grant' ? speechGrant.safeParse(speech.payload) : undefined
+    const languageKey = parsedSpeech?.success === true && parsedSpeech.data.key === token
+    // A rejection names the credential the request used; logging only its role keeps the secret out of
+    // the log while distinguishing an access token from the long-lived language key.
+    console.error('[deepseek-account] rejectToken called', {
+      tokenShape: languageKey ? 'language-key' : 'access-token',
+      matchesStoredGrant: stored?.token === token,
+    })
+    // utoken mints a second, independently revocable key for model traffic. Dropping only that key makes
+    // the next request ask for a fresh sign-in instead of discarding a grant that may still be valid.
+    if (languageKey) {
+      if (this.detailsLifetime === lifetime && !this.closed) await this.ctx.credentials.deleteRecord(SPEECH)
+      return
+    }
     if (stored?.token !== token || this.detailsLifetime !== lifetime) return
     await this.expireCredential(token, lifetime)
   }
 
   private async expireCredential(token: string, lifetime: AbortController): Promise<void> {
+    console.error('[deepseek-account] credential expired', { origin: this.origin })
     this.removing ??= (async () => {
       if (this.attempt !== undefined) await this.cancelSignIn(this.attempt.view.id)
       const record = await this.ctx.credentials.readRecord(KEY)
@@ -389,6 +495,9 @@ export class DeepSeekAccount extends TypertRemoteService {
       const current = grant.parse(record.payload)
       if (current.token !== token || current.issuer !== this.origin) return this.getState()
       await this.ctx.credentials.deleteRecord(KEY)
+      // The model key belongs to the grant it was minted with, so it leaves with it.
+      await this.ctx.credentials.deleteRecord(SPEECH)
+      await this.ctx.credentials.deleteRecord(PROFILE)
       this.ctx.emit('deepseek-account/session-expired')
       this.attempt = undefined
       this.ctx.emit('deepseek-account/signed-out')
@@ -431,6 +540,7 @@ export class DeepSeekAccount extends TypertRemoteService {
     return { origin: this.origin, token: stored.token,
       userId: this.lastProfile?.token === stored.token ? this.lastProfile.profile.value.id || null : null,
       ...(this.embeddedPageDist ? { embeddedPageDist: this.embeddedPageDist } : {}),
+      usagePath: this.usagePath, topUpPath: this.topUpPath,
       requestHeaders }
   }
 
@@ -470,6 +580,36 @@ export class DeepSeekAccount extends TypertRemoteService {
   }
 
   /**
+   * Read the long-lived language-model key issued by the utoken desktop exchange. It is the
+   * credential for model and speech requests, kept apart from the 10-minute access token.
+   * @param destination - actual request destination or API base URL; when supplied, only the
+   * configured inference origin may receive the key.
+   * @returns the `sk-`-prefixed key, or undefined while signed out, when the record was issued by
+   * a different authorization origin, or when the destination is not the inference origin.
+   */
+  async resolveLanguageKey(destination?: string): Promise<string | undefined> {
+    if (this.closed) return undefined
+    // A key minted by this deployment only leaves for the configured inference origin, exactly like
+    // the account access token: a profile that names another Messages baseURL must not carry it.
+    if (destination !== undefined) {
+      const url = new URL(destination)
+      if (url.origin !== this.inferenceOrigin || url.username || url.password) {
+        console.error('[deepseek-account] language key withheld for a foreign inference origin', {
+          destination: url.origin, inferenceOrigin: this.inferenceOrigin,
+        })
+        return undefined
+      }
+    }
+    const record = await this.ctx.credentials.readRecord(SPEECH)
+    if (record === undefined) return undefined
+    if (record.kind !== 'grant') throw new PlatformAuthError('storage')
+    const parsed = speechGrant.safeParse(record.payload)
+    if (!parsed.success) throw new PlatformAuthError('storage')
+    if (parsed.data.issuer !== this.origin) return undefined
+    return parsed.data.key
+  }
+
+  /**
    * Join an active attempt or start browser authorization.
    * @param client - identity of the requesting UI; a new attempt captures it, and joining retains the original attempt's identity.
    * @param callbackOrigin - browser-accessible loopback HTTP origin, including any SSH local port.
@@ -505,8 +645,10 @@ export class DeepSeekAccount extends TypertRemoteService {
       interaction: { notify: () => undefined, prompt: () => Promise.reject(new PlatformAuthError('protocol')) },
     }).then((outcome) => {
       this.update(attempt, { phase: outcome.status === 'authorized' ? 'succeeded' : 'cancelled' })
-      if (outcome.status === 'authorized' && attempt.completionUrl !== undefined) {
-        attempt.callback?.writeHead(302, { location: attempt.completionUrl, 'cache-control': 'no-store' }).end()
+      if (outcome.status === 'authorized') {
+        // utoken has no post-authorization page, so the return tab shows its own confirmation and
+        // closes itself instead of leaving the blank body a 204 renders.
+        this.finishSucceededCallback(attempt)
       } else attempt.callback?.writeHead(204, { 'cache-control': 'no-store' }).end()
     }).catch((error: unknown) => {
       const code = error instanceof PlatformAuthError ? error.code : 'protocol'
@@ -519,7 +661,9 @@ export class DeepSeekAccount extends TypertRemoteService {
       if (attempt.callback !== undefined) {
         await streamPromises.finished(attempt.callback, { cleanup: true }).catch(() => undefined)
       }
-      attempt.disposeCallback?.()
+      // The callback route lives for the plugin lifetime, so a late return still gets an answer.
+      attempt.state = undefined
+      attempt.code = undefined
     })
     this.changed('snapshot')
     return this.getState()
@@ -560,6 +704,8 @@ export class DeepSeekAccount extends TypertRemoteService {
         if (!parsed.success) throw new PlatformAuthError('storage')
         if (parsed.data.issuer !== this.origin) throw new PlatformAuthError('protocol')
         await this.ctx.credentials.deleteRecord(KEY)
+        await this.ctx.credentials.deleteRecord(SPEECH)
+        await this.ctx.credentials.deleteRecord(PROFILE)
         this.revoke(parsed.data.token, platformClientHeaders(this.platform, client))
       }
       this.attempt = undefined
@@ -658,7 +804,9 @@ export class DeepSeekAccount extends TypertRemoteService {
   }
 
   private revoke(token: string, headers: Record<string, string>): void {
-    if (this.closed) return
+    // The DeepSeek logout endpoint does not exist on gateway deployments; local removal still
+    // completes in signOut(), so skip the remote revocation retries entirely on those origins.
+    if (this.closed || !this.platformAccountApis) return
     const revocation = revokeAccount(this.origin, token, this.logoutPolicy,
       this.logoutLifetime.signal, { ...this.requestHeaders, ...headers }).finally(() => { this.revocations.delete(revocation) })
     this.revocations.add(revocation)
@@ -683,93 +831,60 @@ export class DeepSeekAccount extends TypertRemoteService {
   private async run(session: AuthorizationSession, attempt: Attempt): Promise<void> {
     const webServer = this.ctx.get('webServer')
     if (webServer === undefined) throw new PlatformAuthError('protocol')
-    const callbackOrigin = new URL(attempt.origin)
     const verifier = randomBytes(32).toString('base64url')
     const state = randomBytes(32).toString('base64url')
     const challenge = createHash('sha256').update(verifier).digest('base64url')
-    let authorizeId: string | undefined
     const code = Promise.withResolvers<string>()
+    // The route installed for the plugin lifetime hands codes over through these fields; a
+    // callback that arrives after this attempt settled is answered by the route itself.
+    attempt.state = state
+    attempt.code = code
     // Callback requests may precede initialization settlement; the rejection is observed immediately.
     void code.promise.catch(() => undefined)
     const deadline = new AbortController()
-    let expiresAt = Date.now() + this.attemptTimeout
+    const expiresAt = Date.now() + this.attemptTimeout
     const signal = AbortSignal.any([session.signal, deadline.signal])
-    let timer = setTimeout(() =>{  deadline.abort() }, this.attemptTimeout)
+    const timer = setTimeout(() =>{  deadline.abort() }, this.attemptTimeout)
     const abort = (): void => { code.reject(new PlatformAuthError('expired')) }
     signal.addEventListener('abort', abort, { once: true })
     try {
-      attempt.disposeCallback = this.ctx.on('webserver/request', async (req, res, next) => {
-        let receivedOrigin: URL
-        try { receivedOrigin = new URL(`http://${req.headers.host ?? ''}`) }
-        catch { await next(); return }
-        if (receivedOrigin.href !== callbackOrigin.href) { await next(); return }
-        let url: URL
-        try { url = new URL(req.url ?? '/', callbackOrigin) }
-        catch { res.writeHead(400, { 'cache-control': 'no-store' }).end(); return }
-        if (url.origin !== callbackOrigin.origin || url.pathname !== '/oauth/callback') { await next(); return }
-        const receivedCode = url.searchParams.get('code')
-        const receivedState = url.searchParams.get('state') ?? ''
-        const validState = Buffer.byteLength(receivedState) === Buffer.byteLength(state)
-          && timingSafeEqual(Buffer.from(receivedState), Buffer.from(state))
-        if (req.method !== 'GET' || !validState || !receivedCode
-          || url.searchParams.getAll('state').length !== 1 || url.searchParams.getAll('code').length !== 1) {
-          res.writeHead(400, { 'cache-control': 'no-store' }).end(); return
-        }
-        if (signal.aborted || attempt.callback !== undefined || attempt.view.phase !== 'waiting-browser') {
-          res.writeHead(410, { 'cache-control': 'no-store' }).end(); return
-        }
-        attempt.callback = res
-        code.resolve(receivedCode)
-      })
       signal.throwIfAborted()
-      const redirectUri = `${attempt.origin}/oauth/callback`
-      const init = initialization.safeParse(await this.request('auth_init', {
-        code_challenge: challenge, code_challenge_method: 'S256', state, redirect_uri: redirectUri, locale: attempt.locale,
-        login_source: attempt.loginSource,
-      }, signal, attempt.clientHeaders), { reportInput: true })
-      if (!init.success) this.rejectPayload('auth_init', init.error)
-      const authorizeUrl = browserUrl(init.data.authorize_url, this.origin, '/dsh/authorize', this.rewriteBrowserOrigin)
-      authorizeId = init.data.authorize_id
-      signal.throwIfAborted()
-      const now = Date.now()
-      expiresAt = Math.min(expiresAt, now + init.data.expires_in * 1000)
-      const remaining = expiresAt - now
-      if (remaining <= 0) { deadline.abort(); signal.throwIfAborted() }
-      clearTimeout(timer)
-      timer = setTimeout(() =>{  deadline.abort() }, remaining)
+      const redirectUri = `${attempt.origin}${DESKTOP_CALLBACK_PATH}`
+      // utoken (new-api) serves the authorization page directly; no init round-trip.
+      const authorizeUrl = desktopAuthorizeUrl(this.origin, redirectUri, state, challenge)
       this.update(attempt, { phase: 'waiting-browser', authorizeUrl, expiresAt })
       const receivedCode = await code.promise
       signal.throwIfAborted()
       this.update(attempt, { phase: 'exchanging' })
-      const deviceRecord = await this.ctx.credentials.modifyRecord(DEVICE, current => Promise.resolve(current === undefined
-        ? { kind: 'grant', payload: { id: randomUUID() } } : undefined))
-      if (deviceRecord?.kind !== 'grant') throw new PlatformAuthError('storage')
-      const identity = device.parse(deviceRecord.payload)
-      const result = exchange.safeParse(await this.request('auth_exchange', {
-        code: receivedCode, code_verifier: verifier, redirect_uri: redirectUri,
-        device_id: identity.id, device_model: `${platform()}-${arch()}`, os_version: deviceOsVersion(),
-      }, signal, attempt.clientHeaders), { reportInput: true })
-      if (!result.success) this.rejectPayload('auth_exchange', result.error)
-      const completionUrl = new URL(browserUrl(result.data.authorized_url, this.origin, '/dsh/authorized', this.rewriteBrowserOrigin))
-      completionUrl.searchParams.set('login_source', attempt.loginSource)
-      attempt.completionUrl = completionUrl.href
+      const result = desktopToken.safeParse(await exchangeDesktopToken(
+        this.origin, receivedCode, redirectUri, verifier, signal, { ...this.requestHeaders, ...attempt.clientHeaders }))
+      if (!result.success) this.rejectPayload('desktop_token', result.error)
       if (Date.now() >= expiresAt) deadline.abort()
       signal.throwIfAborted()
-      if (result.data.user != null) {
-        try { attempt.initialProfile = { token: result.data.token, value: { status: 'ready', value: profile(result.data.user) } } }
-        catch {
-          // Invalid optional user data falls back to current without discarding a valid authorization.
-        }
-      }
       this.update(attempt, { phase: 'committing' })
       clearTimeout(timer)
-      try { await session.commit({ kind: 'grant', payload: { version: 1, token: result.data.token, issuer: this.origin } }) }
-      catch { throw new PlatformAuthError('storage') }
+      // The speech key outlives the 10-minute access token, so it is stored in its own record and
+      // is never cleared by access-token expiry.
+      try {
+        await this.ctx.credentials.modifyRecord(SPEECH, () => Promise.resolve({
+          kind: 'grant', payload: { version: 1, key: desktopLanguageKey(result.data), issuer: this.origin },
+        }))
+        await session.commit({ kind: 'grant', payload: { version: 1, token: result.data.access_token, issuer: this.origin } })
+        // utoken returns the account snapshot on the exchange; persist it so the gateway profile
+        // renders across restarts without the DeepSeek profile endpoint.
+        const account = result.data.user
+        if (account !== undefined) {
+          const value: AccountDetails['profile'] = { status: 'ready', value: desktopProfile(account) }
+          await this.ctx.credentials.modifyRecord(PROFILE, () => Promise.resolve({
+            kind: 'grant', payload: { version: 1, issuer: this.origin, user: account },
+          }))
+          this.cacheProfile(result.data.access_token, value)
+        }
+      } catch { throw new PlatformAuthError('storage') }
     } catch (error) {
       if (deadline.signal.aborted) throw new PlatformAuthError('expired')
       throw error
     } finally {
-      if (signal.aborted && authorizeId !== undefined) this.cancelRequest(authorizeId, verifier, attempt.clientHeaders)
       clearTimeout(timer)
       signal.removeEventListener('abort', abort)
       // begin() settles the browser response and removes only this attempt's callback listener.
@@ -786,18 +901,94 @@ export class DeepSeekAccount extends TypertRemoteService {
     throw new PlatformAuthError('protocol')
   }
 
-  private cancelRequest(authorizeId: string, verifier: string, headers: Record<string, string>): void {
-    if (this.closed) return
-    const cancellation = this.request('auth_cancel', { authorize_id: authorizeId, code_verifier: verifier },
-      this.logoutLifetime.signal, headers).then(() => undefined, () => {
-      // Remote cancellation failures never reverse local cancellation or expose verifier diagnostics.
-    }).finally(() => { this.revocations.delete(cancellation) })
-    this.revocations.add(cancellation)
+  /**
+   * Answer the desktop callback route for the plugin lifetime, so a return that outlives its
+   * attempt still gets a readable page instead of the WebServer admission refusal. The route runs
+   * ahead of admission — the return is a cross-site top-level navigation, which the browser-trust
+   * fence rejects — and the CSRF state, not the Host header, decides which attempt a code belongs
+   * to: loopback Host spellings and local port forwards must not silently detach a login.
+   * @param ctx - owning plugin context; disposal removes the route.
+   */
+  private installCallbackRoute(ctx: Context): void {
+    ctx.effect(() => ctx.on('webserver/request', async (req, res, next) => {
+      let url: URL
+      try { url = new URL(req.url ?? '/', 'http://127.0.0.1') } catch { await next(); return }
+      if (url.pathname !== DESKTOP_CALLBACK_PATH) { await next(); return }
+      const attempt = this.attempt
+      const received = url.searchParams.get('state') ?? ''
+      const expected = attempt?.state
+      const stateMatches = expected !== undefined && Buffer.byteLength(received) === Buffer.byteLength(expected)
+        && timingSafeEqual(Buffer.from(received), Buffer.from(expected))
+      if (attempt === undefined || !stateMatches) {
+        const reason = attempt === undefined ? 'no-attempt' : expected === undefined ? 'consumed' : 'state-mismatch'
+        this.answerCallback(res, attempt, reason, req.headers.host)
+        return
+      }
+      if (req.method !== 'GET' || url.searchParams.getAll('state').length !== 1) {
+        this.answerCallback(res, attempt, 'malformed', req.headers.host)
+        return
+      }
+      // A second arrival for the same attempt is a reload of the return page, not a new grant.
+      if (attempt.callback !== undefined || attempt.view.phase !== 'waiting-browser' || attempt.code === undefined) {
+        this.answerCallback(res, attempt, 'consumed', req.headers.host)
+        return
+      }
+      const receivedCode = url.searchParams.get('code')
+      // utoken reports a declined consent as error=access_denied with no code.
+      if (url.searchParams.get('error') === 'access_denied' && receivedCode === null) {
+        attempt.callback = res
+        attempt.code.reject(new PlatformAuthError('expired'))
+        return
+      }
+      if (receivedCode === null || receivedCode === '' || url.searchParams.getAll('code').length !== 1) {
+        this.answerCallback(res, attempt, 'malformed', req.headers.host)
+        return
+      }
+      attempt.callback = res
+      attempt.code.resolve(receivedCode)
+    }), 'account: desktop callback route')
   }
 
-  private request(method: string, body: unknown, signal: AbortSignal, headers: Record<string, string>): Promise<unknown> {
-    return requestPlatform(this.origin, method, body,
-      AbortSignal.any([signal, AbortSignal.timeout(this.requestTimeout)]), { ...this.requestHeaders, ...headers })
+  /**
+   * End one callback request the attempt cannot consume with a page a person can act on, and log
+   * the classification so a rejected return is diagnosable without inspecting the browser.
+   * @param res - the callback response, still unheadered.
+   * @param attempt - active attempt when one exists; supplies the page language.
+   * @param reason - why the return could not be consumed.
+   * @param host - request authority, logged only to expose port-forward or host-spelling drift.
+   */
+  private answerCallback(res: ServerResponse, attempt: Attempt | undefined, reason: string, host: string | undefined): void {
+    const locale = attempt?.locale ?? 'zh_CN'
+    const phase = attempt?.view.phase ?? 'none'
+    console.error('[deepseek-account] desktop callback rejected', { reason, phase, host })
+    const message = locale === 'zh_CN'
+      ? '登录会话已失效，请关闭此标签页，回到云大师 Agent 重新登录。'
+      : 'This sign-in session has expired. Close this tab and start sign-in again in Yundashi Agent.'
+    const nonce = randomBytes(16).toString('base64url')
+    res.writeHead(400, {
+      'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',
+      'content-security-policy': `default-src 'none'; script-src 'nonce-${nonce}'; frame-ancestors 'none'`,
+      'referrer-policy': 'no-referrer',
+    }).end(`<!doctype html><html lang="${locale === 'zh_CN' ? 'zh-CN' : 'en'}"><meta charset="utf-8">`
+      + `<title>${message}</title><body><p>${message}</p>`
+      + `<p style="color:#888;font-size:12px">${reason}</p><script nonce="${nonce}">window.close()</script></body></html>`)
+  }
+
+  /**
+   * Close out a successful Web return with the confirmation the browser tab can read, then let the
+   * tab retire itself; the application tab owns the signed-in state.
+   * @param attempt - attempt whose callback response is still open.
+   */
+  private finishSucceededCallback(attempt: Attempt): void {
+    const nonce = randomBytes(16).toString('base64url')
+    const message = attempt.locale === 'zh_CN' ? '登录成功，可以关闭此标签页。'
+      : 'Signed in. You can close this tab.'
+    attempt.callback?.writeHead(200, {
+      'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',
+      'content-security-policy': `default-src 'none'; script-src 'nonce-${nonce}'; frame-ancestors 'none'`,
+      'referrer-policy': 'no-referrer',
+    }).end(`<!doctype html><html lang="${attempt.locale === 'zh_CN' ? 'zh-CN' : 'en'}"><meta charset="utf-8"><title>${message}</title>`
+      + `<body><p>${message}</p><script nonce="${nonce}">window.close()</script></body></html>`)
   }
 
   private finishFailedCallback(attempt: Attempt): void {
