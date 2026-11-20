@@ -17,7 +17,7 @@ afterEach(async () => {
 function messagesOnly(response: () => Response) {
   return (input: string | URL | Request): Promise<Response> => {
     const url = new URL(input instanceof Request ? input.url : input)
-    return Promise.resolve(url.pathname === '/models' ? new Response(null, { status: 404 }) : response())
+    return Promise.resolve(url.pathname === '/v1/modelsinfo' ? new Response(null, { status: 404 }) : response())
   }
 }
 
@@ -83,4 +83,26 @@ it('still expires the stored credential on an account-route 401', async () => {
     kind: 'error', failure: { code: 'ACCOUNT_TOKEN_INVALID' },
   })
   expect(rejectToken.mock.calls).toEqual([['account-token']])
+})
+
+it('preserves a 403 utoken quota message as INSUFFICIENT_QUOTA without rejecting the language key', async () => {
+  const ctx = new Context()
+  contexts.push(ctx)
+  await ctx.plugin(LlmRuntime)
+  const rejectToken = vi.fn(async (_token: string): Promise<void> => {})
+  ctx.provide('deepseekAccount', {
+    resolveToken: async (_baseURL: string): Promise<string | undefined> => 'account-token',
+    resolveLanguageKey: async (_destination?: string): Promise<string | undefined> => 'account-token',
+    rejectToken: (token: string): Promise<void> => rejectToken(token),
+  } as DeepSeekAccount)
+  await ctx.plugin(Account)
+  const message = '订阅额度不足或未配置订阅: subscription quota insufficient'
+  vi.spyOn(globalThis, 'fetch').mockImplementation(messagesOnly(() => new Response(JSON.stringify({
+    type: 'error',
+    error: { type: 'new_api_error', message },
+  }), { status: 403 })))
+  await expect(finishOf(ctx, 'deepseek-account')).resolves.toMatchObject({
+    kind: 'error', failure: { code: 'INSUFFICIENT_QUOTA', message },
+  })
+  expect(rejectToken).not.toHaveBeenCalled()
 })

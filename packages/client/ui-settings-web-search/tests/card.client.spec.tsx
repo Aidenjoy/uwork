@@ -8,7 +8,7 @@ import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { SettingsFieldState, SettingsFormShell } from '@deepseek-ai/dsh-client-ui-primitives'
 import { WebSearchCard, type WebSearchCardProps } from '../src/client/WebSearchCard.tsx'
 import type { WebProviderOption, WebSearchCardState } from '../src/client/web-search-card-controller.ts'
-import { en, zh } from '../src/client/locales.ts'
+import { de, en, es, fr, ja, pt, ru, zh } from '../src/client/locales.ts'
 
 afterEach(cleanup)
 
@@ -153,8 +153,8 @@ describe('WebSearchCard billing', () => {
     const { actions } = renderPage(apis())
     fireEvent.click(billingMenu(en.fetchSection))
     expect(screen.getAllByRole('menuitem').map(item => item.textContent))
-      .toEqual(['Automatic', 'Signed-in Yundashi Agent account', 'DeepSeek API key'])
-    fireEvent.click(screen.getByRole('menuitem', { name: 'DeepSeek API key' }))
+      .toEqual(['Automatic', 'Signed-in Yundashi Agent account', 'API key'])
+    fireEvent.click(screen.getByRole('menuitem', { name: 'API key' }))
     fireEvent.click(billingMenu(en.searchSection))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Automatic' }))
     expect(actions.selectBilling.mock.calls).toEqual([['fetch', 'api-key']])
@@ -162,7 +162,7 @@ describe('WebSearchCard billing', () => {
 
   it('explains API-key billing', () => {
     renderPage({ ...shipped(), searchBilling: { value: 'api-key', overridden: true, advancedOverride: [] } })
-    expect(billingMenu(en.searchSection).textContent).toBe('DeepSeek API key')
+    expect(billingMenu(en.searchSection).textContent).toBe('API key')
     expect(region(en.searchSection).getByText('Uses the API key from the Models page; set one first.', { exact: true }))
       .toBeTruthy()
   })
@@ -186,9 +186,9 @@ describe('WebSearchCard billing', () => {
 
   it('carries the approved billing copy in both locales', () => {
     expect([en.billing, en.billingAuto, en.billingAccount, en.billingApiKey])
-      .toEqual(['Billing', 'Automatic', 'Signed-in Yundashi Agent account', 'DeepSeek API key'])
+      .toEqual(['Billing', 'Automatic', 'Signed-in Yundashi Agent account', 'API key'])
     expect([zh.billing, zh.billingAuto, zh.billingAccount, zh.billingApiKey])
-      .toEqual(['计费方式', '自动', '已登录的云大师 Agent 账号', 'DeepSeek API Key'])
+      .toEqual(['计费方式', '自动', '已登录的云大师 Agent 账号', 'API Key'])
     expect([zh.billingAutoHint, zh.billingAccountHint, zh.billingApiKeyHint, zh.billingAdvancedOverride]).toEqual([
       '跟随当前会话的云大师 Agent 账号或 API Key；会话用其他模型时，优先用 API Key，没有则用已登录账号。',
       '需要先登录云大师 Agent 账号。',
@@ -207,8 +207,8 @@ describe('WebSearchCard billing', () => {
 describe('WebSearchCard', () => {
   it('offers legacy search in both locales and renders its own settings', () => {
     const { actions } = renderPage(legacy())
-    expect(searchMenu().textContent).toBe('DeepSeek (legacy)')
-    expect(zh.providerLegacy).toBe('DeepSeek（旧版）')
+    expect(searchMenu().textContent).toBe('Built-in search (legacy)')
+    expect(zh.providerLegacy).toBe('内置搜索（旧版）')
     expect(screen.queryByLabelText(en.count)).toBeNull()
     fireEvent.change(screen.getByLabelText(en.credential), { target: { value: 'new-key' } })
     fireEvent.change(screen.getByLabelText(en.baseUrl), { target: { value: 'https://messages.test/v1' } })
@@ -287,15 +287,11 @@ describe('WebSearchCard', () => {
     expect(actions.resetField.mock.calls).toEqual([['count']])
   })
 
-  it('shows the DeepSeek search guide after the Search API description, and the Fetch API description', () => {
+  it('shows the Search API description and the Fetch API description without external guide links', () => {
     renderPage(apis())
     expect(fetchMenu().textContent).toBe(en.providerDeepSeekFetch)
-    const guide = screen.getByRole('link', { name: en.searchGuide })
-    expect(guide).toHaveProperty('href', en.searchGuideUrl)
-    expect(guide.getAttribute('target')).toBe('_blank')
-    expect(guide.getAttribute('rel')).toBe('noopener noreferrer')
-    // The description comes first; the guide link is the page's own line after it.
-    expect(paragraphs(en.searchSection).slice(0, 2)).toEqual([DESCRIPTIONS['deepseek-search-api']!.zh, en.searchGuide])
+    expect(screen.queryByRole('link')).toBeNull()
+    expect(paragraphs(en.searchSection).slice(0, 1)).toEqual([DESCRIPTIONS['deepseek-search-api']!.zh])
   })
 
   it('shows no settings while neither provider takes them', () => {
@@ -461,5 +457,11 @@ describe('WebSearchCard', () => {
     expect(screen.getByText(en.invalidCount)).toBeTruthy()
     expect(screen.getByLabelText(en.count).getAttribute('aria-invalid')).toBe('true')
     expect(screen.getByRole('button', { name: en.save })).toHaveProperty('disabled', true)
+  })
+
+  it.each([
+    ['en', en], ['zh', zh], ['ja', ja], ['es', es], ['fr', fr], ['de', de], ['ru', ru], ['pt', pt],
+  ] as const)('omits DeepSeek branding and search guide URLs in %s copy', (_locale, dictionary) => {
+    for (const value of Object.values(dictionary)) expect(value).not.toMatch(/deepseek|api-docs\.deepseek\.com/i)
   })
 })

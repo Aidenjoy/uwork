@@ -30,8 +30,28 @@ const CONFIG_ENV = 'YUN_CONFIG'
 /** Preset name selected for this launch, overriding the document's `active` field. */
 const PROFILE_ENV = 'YUN_PROFILE'
 
-/** Ancestor directories visited when looking for the file beside a working directory. */
+/** Ancestor directories visited when looking for the file beside the running entry. */
 const MAX_WALK_UP = 6
+
+/**
+ * Routing and deployment environment variables that `yun.config.json` is permitted to supply.
+ * Restricting the key set keeps local routing files from modifying runtime-execution or process
+ * control variables such as `NODE_OPTIONS` or `PATH`.
+ */
+export const ALLOWED_LAUNCH_CONFIG_KEYS: ReadonlySet<string> = new Set([
+  'DSH_ACCOUNT_ORIGIN',
+  'DSH_INFERENCE_ORIGIN',
+  'DSH_ACCOUNT_INSECURE',
+  'DEEPSEEK_BASE_URL',
+  'DSH_DEFAULT_MODEL',
+  'DSH_ACCOUNT_USAGE_PATH',
+  'DSH_ACCOUNT_TOPUP_PATH',
+  'DSH_PLATFORM_ACCOUNT_APIS',
+  'DSH_ACCOUNT_EMBEDDED_PAGES',
+  'DSH_ACCOUNT_ONBOARDING',
+  'DSH_CONTACT_FORM_URL',
+  'DSH_DESKTOP_UPDATES',
+])
 
 /** What a successful application recorded, for the startup diagnostic line. */
 export interface LaunchConfigApplication {
@@ -78,8 +98,9 @@ function defaultDshHome(environment: NodeJS.ProcessEnv): string {
 }
 
 /**
- * Choose the configuration file: explicit override, then the working directory, then the checkout
- * beside this entry, then the Harness home.
+ * Choose the configuration file from trusted locations only: explicit `$YUN_CONFIG`, then the
+ * checkout beside this entry, then the user's Harness home. Arbitrary working directories are never
+ * scanned, so running the CLI inside an untrusted repository cannot hijack backend routing.
  * @param options - resolved search inputs.
  * @param warn - diagnostic sink for an explicit path that does not exist.
  * @returns the absolute file path, or undefined when no candidate exists.
@@ -98,14 +119,14 @@ function resolveConfigPath(
     warn(`launch config: ${CONFIG_ENV} points at a missing file: ${path}`)
     return undefined
   }
-  const nearby = nearestConfig(options.cwd) ?? nearestConfig(options.moduleDirectory)
+  const nearby = nearestConfig(options.moduleDirectory)
   if (nearby !== undefined) return nearby
   const home = join(options.dshHome, LAUNCH_CONFIG_FILE)
   return existsSync(home) ? home : undefined
 }
 
 /**
- * Validate one preset into string-valued entries.
+ * Validate one preset into allowlisted, string-valued routing entries.
  * @param profile - candidate preset object.
  * @param name - preset name, for the diagnostic.
  * @param warn - diagnostic sink for a rejected entry.
@@ -116,7 +137,11 @@ function readProfile(
 ): Record<string, string> {
   const values: Record<string, string> = {}
   for (const [key, value] of Object.entries(profile)) {
-    if (typeof value === 'object' && value !== null) {
+    if (!ALLOWED_LAUNCH_CONFIG_KEYS.has(key)) {
+      warn(`launch config: ${name}.${key} is not an allowed routing variable; ignored`)
+      continue
+    }
+    if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
       warn(`launch config: ${name}.${key} must be a string, number, or boolean; ignored`)
       continue
     }
@@ -126,10 +151,10 @@ function readProfile(
 }
 
 /**
- * Apply the selected preset to the environment.
+ * Apply the selected preset to unset routing variables in the environment.
  *
- * A value in the file replaces an inherited one, so editing the document is always the single source
- * of truth for backend routing during local debugging.
+ * Caller-supplied environment variables keep precedence so explicit shell overrides and tests are
+ * never silently clobbered by a local configuration file.
  * @param options - search inputs and the environment to mutate in place.
  * @returns what was applied, or undefined when no usable file or preset was found.
  */
@@ -159,15 +184,20 @@ export function applyLaunchConfig(options: LaunchConfigOptions = {}): LaunchConf
       warn(`launch config: ${path} needs an "active" preset name; ignored`)
       return undefined
     }
-    const profile = (profiles as Record<string, unknown>)[selected]
+    const profile = Object.hasOwn(profiles, selected) ? (profiles as Record<string, unknown>)[selected] : undefined
     if (typeof profile !== 'object' || profile === null || Array.isArray(profile)) {
       const available = Object.keys(profiles).join(', ')
       warn(`launch config: ${path} has no preset "${selected}" (available: ${available}); ignored`)
       return undefined
     }
     const values = readProfile(profile as Record<string, unknown>, selected, warn)
-    for (const [name, value] of Object.entries(values)) environment[name] = value
-    return { path, profile: selected, names: Object.keys(values) }
+    const applied: string[] = []
+    for (const [name, value] of Object.entries(values)) {
+      if (environment[name] !== undefined) continue
+      environment[name] = value
+      applied.push(name)
+    }
+    return { path, profile: selected, names: applied }
   } catch (error) {
     warn(`launch config: ignored after ${String(error)}`)
     return undefined

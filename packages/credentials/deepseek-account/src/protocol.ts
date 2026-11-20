@@ -153,6 +153,21 @@ export function desktopLanguageKey(token: z.infer<typeof desktopToken>): string 
 }
 
 /**
+ * Build the desktop OAuth loopback redirect URI from a validated callback origin.
+ * utoken accepts only `http://127.0.0.1:<port>/desktop-auth/callback`, while the callback route
+ * matches by CSRF state rather than Host, so `localhost` normalizes to `127.0.0.1` without
+ * altering where the browser returns.
+ * @param callbackOrigin - validated loopback HTTP origin from {@link loginOrigin}.
+ * @returns exact loopback callback URL sent in authorize and token requests.
+ */
+export function desktopRedirectUri(callbackOrigin: string): string {
+  const url = new URL(callbackOrigin)
+  const host = url.hostname === 'localhost' ? '127.0.0.1' : url.hostname
+  const port = url.port || '80'
+  return `${url.protocol}//${host}:${port}${DESKTOP_CALLBACK_PATH}`
+}
+
+/**
  * Build the browser authorization URL the utoken server expects for a desktop client.
  * @param origin - validated authorization server origin.
  * @param redirectUri - exact loopback callback the client is listening on.
@@ -206,16 +221,34 @@ async function desktopRequest(url: string, init: RequestInit, signal: AbortSigna
     await response.body?.cancel()
     throw new PlatformAuthError('network')
   }
-  const text = await response.text()
-  if (text.length > 4_096) {
-    if (!callerCancelled(signal)) console.error('[deepseek-account] desktop response rejected', { path, stage: 'body-limit' })
-    throw new PlatformAuthError('protocol')
-  }
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let size = 0
+  let stage = 'read-body'
   try {
-    return JSON.parse(text)
-  } catch {
-    if (!callerCancelled(signal)) console.error('[deepseek-account] desktop response rejected', { path, stage: 'parse-json' })
+    while (true) {
+      const next = await reader.read()
+      if (next.done) break
+      size += next.value.byteLength
+      if (size > 4_096) {
+        stage = 'body-limit'
+        throw new PlatformAuthError('protocol')
+      }
+      chunks.push(next.value)
+    }
+    stage = 'parse-json'
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+  } catch (error) {
+    if (stage === 'read-body' && signal.aborted) {
+      if (!callerCancelled(signal)) console.error('[deepseek-account] desktop request failed', { path, errorCode: 'no-response' })
+      throw new PlatformAuthError('no-response')
+    }
+    if (!callerCancelled(signal)) console.error('[deepseek-account] desktop response rejected', { path, stage })
+    if (error instanceof PlatformAuthError) throw error
     throw new PlatformAuthError('protocol')
+  } finally {
+    await reader.cancel().catch(() => undefined)
+    reader.releaseLock()
   }
 }
 
@@ -315,6 +348,35 @@ export async function logoutAccount(origin: string, token: string,
   await platformRequest(`${origin}/auth-api/v0/users/logout`, {
     method: 'POST', headers: { ...headers, 'x-dsh-auth-token': token },
   }, signal)
+}
+
+/**
+ * End a utoken desktop authorization session on sign-out.
+ * @param origin - configured account API origin.
+ * @param token - stored 43-character desktop access token.
+ * @param signal - logout request deadline.
+ * @param headers - validated deployment headers for this origin.
+ * @returns after revocation succeeds or the token is already gone (401).
+ */
+export async function revokeDesktopSession(origin: string, token: string,
+  signal: AbortSignal, headers: Record<string, string>): Promise<void> {
+  const path = '/api/desktop-auth/revoke'
+  let response: Response
+  try {
+    response = await fetch(`${origin}${path}`, {
+      method: 'POST',
+      headers: { ...headers, authorization: `Bearer ${token}` },
+      redirect: 'error',
+      signal,
+    })
+  } catch {
+    if (!callerCancelled(signal)) console.error('[deepseek-account] desktop request failed', { path, errorCode: 'no-response' })
+    throw new PlatformAuthError('no-response')
+  }
+  await response.body?.cancel().catch(() => undefined)
+  if (response.ok || response.status === 401) return
+  if (!callerCancelled(signal)) console.error('[deepseek-account] desktop request failed', { path, status: response.status, errorCode: 'network' })
+  throw new PlatformAuthError('network')
 }
 
 /** Caller cancellation stays silent; standard TimeoutError aborts remain failures. */

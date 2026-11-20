@@ -34,7 +34,7 @@ import { installDesktopFileDrag } from './file-drag.ts'
 import { installDesktopDirectoryPicker } from './directory-picker.ts'
 import { installMicrophonePermissions } from './microphone-permissions.ts'
 import { DesktopBackendController } from './backend-controller.ts'
-import { DESKTOP_IPC, SCHEME, assertDesktopSender, type DesktopUpdateState } from './ipc.ts'
+import { DESKTOP_IPC, DESKTOP_UPDATES_PRELOAD_ARG, SCHEME, assertDesktopSender, type DesktopUpdateState } from './ipc.ts'
 import { readDeviceInfo } from './device-info.ts'
 import { desktopUpdateReadyConfirmation, formatDesktopMessage, resolveDesktopLocale, resolveDesktopStartupLocale } from './locale.ts'
 import type { DesktopMessages } from './locale.ts'
@@ -261,7 +261,7 @@ function platformLoginUrl(authorizeUrl: string): string {
   return url.href
 }
 
-function createWindow(preload: string, show = false, primary = false): BrowserWindow {
+function createWindow(preload: string, show = false, primary = false, updatesEnabled = false): BrowserWindow {
   const window = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -293,6 +293,7 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
       webSecurity: true,
       webviewTag: primary,
       devTools: true,
+      ...updatesEnabled ? { additionalArguments: [DESKTOP_UPDATES_PRELOAD_ARG] } : {},
     },
   })
   window.webContents.setWindowOpenHandler(({ url }) => {
@@ -379,6 +380,7 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
 }
 
 async function main(): Promise<void> {
+  const desktopUpdatesEnabled = process.env.DSH_DESKTOP_UPDATES === '1'
   const desktopSettings = await readDesktopSettings(app.getPath('userData'))
   void pruneCrashReports(app.getPath('logs'))
   const journalDirectory = process.env.DSH_DESKTOP_UPDATE_JOURNAL_DIR
@@ -1146,7 +1148,7 @@ async function main(): Promise<void> {
 
   const automaticCheck = (): void => {
     if (!quitting) void mandatoryPolicy?.check('foreground-or-resume').catch((error: unknown) => { console.error(error) })
-    if (!quitting) void updateSchedule.check().catch((error: unknown) => { console.error(error) })
+    if (!quitting && desktopUpdatesEnabled) void updateSchedule.check().catch((error: unknown) => { console.error(error) })
   }
   powerMonitor.on('resume', automaticCheck)
   app.on('will-quit', () => {
@@ -1200,32 +1202,37 @@ async function main(): Promise<void> {
       { role: 'hideOthers', label: currentDesktopLocale().messages.hideOtherApplications },
       { role: 'unhide', label: currentDesktopLocale().messages.showAllApplications }, { type: 'separator' }]
     : []
-  const applicationItems = (): MenuItemConstructorOptions[] => [
-    // Windows has no system About panel; Electron's fallback is a plain
-    // message box, so the shell shows its own dimmed dialog instead.
-    process.platform === 'win32'
-      ? { label: currentDesktopLocale().messages.aboutMenu,
-        click: () => { void showAbout().catch((error: unknown) => { console.error(error) }) } }
-      : { label: currentDesktopLocale().messages.aboutMenu, role: 'about' },
-    { type: 'separator' },
-    { label: currentDesktopLocale().messages.checkUpdatesMenu, click: () => { void openUpdatePrompt(true) } },
-    ...process.platform === 'darwin' || process.platform === 'win32'
-      ? [{ label: currentDesktopLocale().messages.cliCommandMenu, click: () => { void commandManager.show() } }] : [],
-    { type: 'separator' },
-    ...development ? [
-      { label: currentDesktopLocale().messages.reloadPageMenu, role: 'reload' as const },
-      { label: currentDesktopLocale().messages.restartAppHostMenu, click: () => {
-        if (quitting) return
-        app.relaunch()
-        quitWithoutConfirmation()
-      } },
-    ] : [],
-    { role: 'toggleDevTools', label: currentDesktopLocale().messages.toggleDevToolsMenu },
-    { type: 'separator' },
-    ...hideCommands,
-    { role: 'quit', ...(darwin ? { label: currentDesktopLocale().messages.quitApplication }
-      : process.platform === 'win32' ? { label: currentDesktopLocale().messages.exitApplication } : {}) },
-  ]
+  const applicationItems = (): MenuItemConstructorOptions[] => {
+    const maintenanceItems: MenuItemConstructorOptions[] = [
+      ...desktopUpdatesEnabled
+        ? [{ label: currentDesktopLocale().messages.checkUpdatesMenu, click: () => { void openUpdatePrompt(true) } }] : [],
+      ...process.platform === 'darwin' || process.platform === 'win32'
+        ? [{ label: currentDesktopLocale().messages.cliCommandMenu, click: () => { void commandManager.show() } }] : [],
+    ]
+    return [
+      // Windows has no system About panel; Electron's fallback is a plain
+      // message box, so the shell shows its own dimmed dialog instead.
+      process.platform === 'win32'
+        ? { label: currentDesktopLocale().messages.aboutMenu,
+          click: () => { void showAbout().catch((error: unknown) => { console.error(error) }) } }
+        : { label: currentDesktopLocale().messages.aboutMenu, role: 'about' },
+      ...maintenanceItems.length > 0 ? [{ type: 'separator' as const }, ...maintenanceItems] : [],
+      { type: 'separator' },
+      ...development ? [
+        { label: currentDesktopLocale().messages.reloadPageMenu, role: 'reload' as const },
+        { label: currentDesktopLocale().messages.restartAppHostMenu, click: () => {
+          if (quitting) return
+          app.relaunch()
+          quitWithoutConfirmation()
+        } },
+      ] : [],
+      { role: 'toggleDevTools', label: currentDesktopLocale().messages.toggleDevToolsMenu },
+      { type: 'separator' },
+      ...hideCommands,
+      { role: 'quit', ...(darwin ? { label: currentDesktopLocale().messages.quitApplication }
+        : process.platform === 'win32' ? { label: currentDesktopLocale().messages.exitApplication } : {}) },
+    ]
+  }
   const devToolsF12Shortcut: MenuItemConstructorOptions = { role: 'toggleDevTools', visible: false, accelerator: 'F12' }
   const windowsDevToolsShortcuts: MenuItemConstructorOptions[] = [
     { role: 'toggleDevTools', visible: false },
@@ -1320,7 +1327,7 @@ async function main(): Promise<void> {
     }
   }
   const createMainWindow = (): BrowserWindow => {
-    const window = createWindow(appPreload, false, true)
+    const window = createWindow(appPreload, false, true, desktopUpdatesEnabled)
     mainWindow = window
     browserGuests.bind(window, (guest, name) => shortcuts.attachGuest(window, guest, name))
     shortcuts.attach(window)

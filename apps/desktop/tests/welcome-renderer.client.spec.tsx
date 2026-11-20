@@ -88,13 +88,17 @@ describe('desktop welcome presentation', () => {
   })
 })
 
-it.each(['zh-CN', 'en'])('renders %s timeout with manual retry', async (language) => {
+it.each(['zh-CN', 'en'])('renders %s timeout with manual retry and sign-in-later escape', async (language) => {
   const view = mount(language)
   const receive = (state: AccountView) => { act(() => { view.api.onAccountState.mock.calls[0]![0](state) }) }
   receive({ status: 'signed-out', links: { usageUrl: '', topUpUrl: '' }, attempt: { id: 'expired' as NonNullable<AccountView['attempt']>['id'], phase: 'expired' } })
   expect(view.button('#auth-retry').hidden).toBe(false)
+  expect(view.button('#auth-sign-in-later').hidden).toBe(false)
   expect(view.api.startSignIn).not.toHaveBeenCalled()
   await expect(view.copy() + view.document.querySelector('#auth-description')!.textContent + '\n').toMatchFileSnapshot(`./expected/welcome/${language}-timeout.expected.txt`)
+  fireEvent.click(view.button('#auth-sign-in-later'))
+  expect(view.api.skip).toHaveBeenCalledOnce()
+  await vi.waitFor(() => { expect(view.button('#auth-sign-in-later').disabled).toBe(false) })
   fireEvent.click(view.button('#auth-retry'))
   expect(view.api.startSignIn).toHaveBeenCalledOnce()
 })

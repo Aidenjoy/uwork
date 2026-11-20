@@ -6,7 +6,7 @@
  * the onboarding plugin's shared modal, so the key is entered once.
  */
 import type { TrackProductEvent } from '@deepseek-ai/dsh-client-product-analytics/client'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { InjectFace, PropsRuntime, PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
@@ -26,6 +26,8 @@ export interface DeepSeekOnboardingInjected {
   track?: TrackProductEvent
   /** Whether first-run setup should show automatically. Explicit requests remain available. */
   automatic: boolean
+  /** Optional request to pre-open the third-party provider flow when redirecting to Models. */
+  onAddThirdParty?: (() => void) | undefined
   hooks: {
     /** Shared Models-page join state, bound by the slot renderer. */
     models: SnapshotStore<ModelsSettingsState>
@@ -56,25 +58,44 @@ function assertNever(_value: never): never {
  * @returns the onboarding modal or null when onboarding needs no intervention.
  */
 export function DeepSeekOnboardingDialog(props: DeepSeekOnboardingDialogProps): ReactNode {
-  const { complete, controller, useModels, operations, schema, t, renderSlot, automatic, explicit = false } = props
+  const {
+    complete, openSection, onAddThirdParty, controller, useModels, operations, schema, t, renderSlot, automatic, explicit = false,
+  } = props
   const [apiKey, setApiKey] = useState(explicit)
+  const redirected = useRef(false)
   const state = useModels(snapshot => snapshot)
   const readiness = onboardingReadiness(state)
+  const row = state.rows.find(candidate =>
+    candidate.entry.provider === 'deepseek-official'
+    && candidate.entry.settingsNs === 'llm-deepseek'
+    && candidate.entry.settingsPath.length === 0)
+  const namespace = state.namespaces.get('llm-deepseek')
+  const officialAvailable = row !== undefined && namespace !== undefined
+  const redirectToThirdParty = explicit && state.status === 'ready' && !officialAvailable
 
   useEffect(() => {
     if ((automatic || explicit) && state.status === 'idle') void controller.load()
   }, [controller, state.status, automatic, explicit])
 
   useEffect(() => {
+    if (redirectToThirdParty) {
+      if (redirected.current) return
+      redirected.current = true
+      onAddThirdParty?.()
+      complete()
+      openSection('models')
+      return
+    }
     if (
       (!automatic && !explicit)
       || readiness.kind === 'adapter-absent'
       || (!explicit && readiness.kind === 'provider-ready')
       || readiness.kind === 'unavailable'
     ) complete()
-  }, [complete, readiness.kind, explicit, automatic])
+  }, [complete, openSection, onAddThirdParty, redirectToThirdParty, readiness.kind, explicit, automatic])
 
   if (!automatic && !explicit) return null
+  if (redirectToThirdParty) return null
 
   switch (readiness.kind) {
     case 'loading':
@@ -91,11 +112,6 @@ export function DeepSeekOnboardingDialog(props: DeepSeekOnboardingDialogProps): 
       return assertNever(readiness)
   }
 
-  const row = state.rows.find(candidate =>
-    candidate.entry.provider === 'deepseek-official'
-    && candidate.entry.settingsNs === 'llm-deepseek'
-    && candidate.entry.settingsPath.length === 0)
-  const namespace = state.namespaces.get('llm-deepseek')
   /* v8 ignore next 2 -- credential-missing is derived only from this exact joined row. */
   if (row === undefined || namespace === undefined) return null
 

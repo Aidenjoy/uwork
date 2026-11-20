@@ -90,16 +90,23 @@ export function apply(ctx: ClientContext): void {
   // Registration-time text (the nav label thunk) and the inject faces share
   // one bound translate; copy freshness rides the locale revision.
   const t = ctx.locale.bind(NS) as ModelsSectionInjected['t']
+  let openAddOnModels = false
   const injected = (): ModelsSectionInjected => ({
     controller,
     hooks: { snapshot: controller.store },
     operations,
     schema,
     t,
+    consumeAddRequest: () => {
+      const requested = openAddOnModels
+      openAddOnModels = false
+      return requested
+    },
   })
   const deepSeekOnboardingInjected = (): DeepSeekOnboardingInjected => ({
     automatic: credentialOnboarding,
     track: (name, attributes) => ctx.get('productAnalytics')?.track(name, attributes),
+    onAddThirdParty: () => { openAddOnModels = true },
     controller,
     hooks: { models: controller.store },
     operations,

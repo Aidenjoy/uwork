@@ -32,6 +32,18 @@ export function modelListingURL(baseURL: string): string {
   return path === '' || path === '/v1' ? `${root.origin}/v1/models` : `${root.origin}/models`
 }
 
+/**
+ * The compact model listing of a gateway, whose endpoint sits at the origin root.
+ * A version or provider path in the Messages `baseURL` belongs to Messages only, so the
+ * listing always uses the origin that receives this route's credential. Redirects are
+ * refused by {@link requestModelListing}, exactly as for the full listing.
+ * @param baseURL - Messages `baseURL`.
+ * @returns `/v1/modelsinfo?type=text` at that origin.
+ */
+export function gatewayModelListingURL(baseURL: string): string {
+  return `${new URL(baseURL).origin}/v1/modelsinfo?type=text`
+}
+
 /** The requirement one listing entry declares under this client's product token. */
 export type ClientRequirement =
   | { readonly kind: 'none' }
@@ -88,9 +100,10 @@ export interface ModelListing {
   /** Rows without a usable id, and repeated ids. */
   readonly skipped: number
   /**
-   * Whether this listing came from an OpenAI-compatible gateway rather than DeepSeek's catalog:
-   * no entry declares `api_capabilities`, and every entry declares `supported_endpoint_types`.
-   * Such a listing is the authority on which models exist, so it is offered as listed.
+   * Whether this listing came from a gateway rather than DeepSeek's catalog: no entry declares
+   * `api_capabilities`, and every entry declares either `supported_endpoint_types` or the compact
+   * `type: "text"` model kind. Such a listing is the authority on which models exist, so it is
+   * offered as listed.
    */
   readonly gateway: boolean
 }
@@ -184,26 +197,91 @@ function badgeOf(entry: Fields): ListedBadge | undefined {
   return { kind: 'badge', badge: { text, tone } }
 }
 
+/** Non-chat endpoint segments rejected even when paired with an OpenAI-compatible gateway route. */
+const NON_CHAT_ENDPOINT_PATTERN =
+  /(?:^|[-_])(?:image|video|embed|embeddings|rerank|audio|speech|tts|whisper|transcrib|moderation|midjourney|suno|kling|jimeng)(?:$|[-_])/iu
+
+/** Model id patterns identifying non-chat models (embeddings, rerank, audio/ASR/TTS, image/video/3D, moderation, OCR). */
+const NON_CHAT_MODEL_ID_PATTERNS = [
+  /(?:^|[/._-])(?:text-)?embed(?:ding|dings)?(?:$|[/._-]|[-_]?v?\d)/iu,
+  /(?:^|[/._-])(?:bge-(?:large|base|small|m3)|m3e|gte|voyage|nomic-embed|snowflake-arctic-embed)(?:$|[/._-]|[-_]?v?\d)/iu,
+  /(?:^|[/._-])rerank(?:er)?(?:$|[/._-]|[-_]?v?\d)/iu,
+  /(?:^|[/._-])(?:tts|whisper|transcrib\w*|speech|asr|paraformer|sensevoice|cosyvoice|sambert|realtime|audio)(?:$|[/._-]|[-_]?\d)/iu,
+  /(?:^|[/._-])(?:dall-?e|gpt-image|chatgpt-image|imagen|flux|midjourney|mj|sdxl|sd3|stable-diffusion)(?:$|[/._-]|[-_]?\d)/iu,
+  /(?:^|[/._-])(?:seedream|seededit|wanx|cogview|kolors|recraft|ideogram|jimeng|nova-canvas|titan-image|bagel)(?:$|[/._-]|[-_]?\d)/iu,
+  /(?:^|[/._-])(?:image|video|t2i|i2i|t2v|i2v|v2v)(?:$|[/._-])/iu,
+  /(?:^|[/._-])(?:sora|veo|kling|vidu|seedance|cogvideox?|hailuo|luma|dream-machine|runway|pika|pixverse)(?:$|[/._-]|[-_]?\d)/iu,
+  /(?:^|[/._-])(?:nova-reel|wan-?2\.\d)(?:$|[/._-]|[-_]?\d)/iu,
+  /(?:^|[/._-])(?:suno|udio|music|moderation|llama-guard|shieldgemma|prompt-guard|ocr|tripo|meshy|rodin)(?:$|[/._-]|[-_]?\d)/iu,
+  /^(?:babbage|davinci)-002$/iu,
+] as const
+
 /** Endpoint types one entry declares it is served by; `undefined` when the field is absent or unreadable. */
 function endpointTypes(entry: Fields): readonly unknown[] | undefined {
   const declared = entry.supported_endpoint_types
   return Array.isArray(declared) ? declared : undefined
 }
 
-/** Whether a gateway entry declares an endpoint type this build can chat over. */
-function gatewayServesChat(entry: Fields): boolean {
+/** Whether a gateway entry serves a chat language model this build can drive. */
+function gatewayServesChat(entry: Fields, id: string): boolean {
   const served = endpointTypes(entry)
-  return served !== undefined && GATEWAY_ENDPOINT_TYPES.some(type => served.includes(type))
+  if (served === undefined) return false
+  if (served.some(type => typeof type === 'string' && NON_CHAT_ENDPOINT_PATTERN.test(type))) return false
+  if (!GATEWAY_ENDPOINT_TYPES.some(type => served.includes(type))) return false
+  return !NON_CHAT_MODEL_ID_PATTERNS.some(pattern => pattern.test(id))
 }
 
-function capabilitiesOf(entry: Fields): ListedCapabilities {
+const COMPACT_GATEWAY_TYPES = new Set(['text', 'image', 'video'])
+
+/** Whether an entry uses the compact gateway listing's model-kind discriminator, case-insensitively. */
+function compactGatewayRow(entry: Fields): boolean {
+  const type = entry.type
+  return typeof type === 'string' && COMPACT_GATEWAY_TYPES.has(type.toLowerCase())
+}
+
+/** Whether an entry uses the compact gateway listing's text-model kind, case-insensitively. */
+function compactTextRow(entry: Fields): boolean {
+  const type = entry.type
+  return typeof type === 'string' && type.toLowerCase() === 'text'
+}
+
+/** Whether a compact entry also names a non-chat endpoint, which its `type` may not override. */
+function compactRowDeclaresNonChatEndpoint(entry: Fields): boolean {
+  const served = endpointTypes(entry)
+  return served !== undefined && served.some(type => typeof type === 'string' && NON_CHAT_ENDPOINT_PATTERN.test(type))
+}
+
+/** Whether a compact text row names a chat language model this build can drive. */
+function compactRowServesChat(entry: Fields, id: string): boolean {
+  return compactTextRow(entry)
+    && !compactRowDeclaresNonChatEndpoint(entry)
+    && !NON_CHAT_MODEL_ID_PATTERNS.some(pattern => pattern.test(id))
+}
+
+/** Gateway capability facts: text input plus any valid optional context or output bounds. */
+function gatewayFacts(entry: Fields): ListedFacts {
+  const contextWindow = capacity(entry.context_window)
+  const maxOutputTokens = capacity(entry.max_output_tokens)
+  return {
+    inputModalities: ['text'],
+    ...typeof contextWindow === 'number' ? { contextWindow } : {},
+    ...typeof maxOutputTokens === 'number' ? { maxOutputTokens } : {},
+  }
+}
+
+function capabilitiesOf(entry: Fields, id: string): ListedCapabilities {
   const messages = fieldsOf(fieldsOf(entry.api_capabilities)?.anthropic_messages)
   if (messages === undefined) {
-    // A gateway lists models without Messages capabilities and declares endpoint types instead;
-    // a declared chat endpoint is enough, and the entry inherits this build's limits.
-    return gatewayServesChat(entry)
-      ? { usable: true, facts: { inputModalities: ['text'] } }
-      : { usable: false, reason: 'declares no api_capabilities.anthropic_messages' }
+    // A gateway lists models without Messages capabilities and declares endpoint types or a compact
+    // `type` discriminator instead; exclude non-chat routes and ignore unreadable capacities.
+    if (gatewayServesChat(entry, id) || compactRowServesChat(entry, id)) {
+      return { usable: true, facts: gatewayFacts(entry) }
+    }
+    return {
+      usable: false,
+      reason: endpointTypes(entry) !== undefined || typeof entry.type === 'string'
+        ? 'is not a chat language model' : 'declares no api_capabilities.anthropic_messages',
+    }
   }
   const outputs = entry.output_modalities === undefined ? ['text'] : knownModalities(entry.output_modalities)
   if (outputs?.includes('text') !== true) return { usable: false, reason: 'declares no text output' }
@@ -251,13 +329,13 @@ export function parseModelListing(body: unknown): ModelListing {
     seen.add(id)
     const badge = badgeOf(entry)
     const selfDescribed = fieldsOf(fieldsOf(entry.api_capabilities)?.anthropic_messages) !== undefined
-    if (!selfDescribed && endpointTypes(entry) !== undefined) gatewayRows += 1
+    if (!selfDescribed && (endpointTypes(entry) !== undefined || compactGatewayRow(entry))) gatewayRows += 1
     entries.push({
       id,
       ...typeof entry.name === 'string' && entry.name.length > 0 ? { name: entry.name } : {},
       requirement: requirementOf(entry),
       selfDescribed,
-      capabilities: capabilitiesOf(entry),
+      capabilities: capabilitiesOf(entry, id),
       ...badge === undefined ? {} : { badge },
     })
   }

@@ -1,6 +1,6 @@
 /** Bounded, memory-only revocation of a token already removed from local credentials. */
 import { setTimeout } from 'node:timers/promises'
-import { logoutAccount } from './protocol.ts'
+import { logoutAccount, revokeDesktopSession } from './protocol.ts'
 
 /** Resolved logout retry settings owned by the account provider. */
 export interface LogoutRetryPolicy {
@@ -16,10 +16,11 @@ export interface LogoutRetryPolicy {
  * @param policy - Request deadline and exponential retry limits.
  * @param signal - Provider lifetime; shutdown aborts requests and delays.
  * @param headers - Validated issuer-only deployment headers.
+ * @param mode - Revocation endpoint family: DeepSeek platform logout or utoken desktop revoke.
  * @returns After success, exhaustion, or cancellation; remote failures stay in the background.
  */
 export async function revokeAccount(origin: string, token: string, policy: LogoutRetryPolicy,
-  signal: AbortSignal, headers: Record<string, string>): Promise<void> {
+  signal: AbortSignal, headers: Record<string, string>, mode: 'platform' | 'desktop' = 'platform'): Promise<void> {
   for (let attempt = 0; attempt <= policy.maxRetries; attempt++) {
     if (signal.aborted) return
     if (attempt > 0) {
@@ -27,8 +28,10 @@ export async function revokeAccount(origin: string, token: string, policy: Logou
       catch { return } // The validated delay rejects only when the provider lifetime ends.
     }
     try {
-      await logoutAccount(origin, token,
-        AbortSignal.any([signal, AbortSignal.timeout(policy.requestTimeoutMs)]), headers)
+      const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(policy.requestTimeoutMs)])
+      await (mode === 'desktop'
+        ? revokeDesktopSession(origin, token, requestSignal, headers)
+        : logoutAccount(origin, token, requestSignal, headers))
       return
     } catch {
       // HTTP, business, and transport failures consume one attempt without restoring credentials.

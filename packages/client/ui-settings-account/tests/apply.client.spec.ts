@@ -18,6 +18,7 @@ import type { DesktopOnboardingInjected } from '../src/client/DesktopOnboardingE
 import type { AccountSectionInjected } from '../src/client/AccountSection.tsx'
 import { CONTACT_CONFIG_GLOBAL } from '../src/contact-config.ts'
 import { PLATFORM_PAGES_GLOBAL } from '../src/platform-pages-config.ts'
+import { ONBOARDING_CONFIG_GLOBAL } from '../src/onboarding-config.ts'
 import { AccountPlatformHost } from '../src/client/AccountPlatformHost.tsx'
 import type { AccountPlatformHostInjected } from '../src/client/AccountPlatformHost.tsx'
 import { AccountQuotaNotice } from '../src/client/AccountQuotaNotice.tsx'
@@ -70,6 +71,17 @@ it('registers account sign-in in a plain browser without the Desktop-only surfac
   }
 }, 60_000)
 
+it('skips the first-run overlay on Desktop when the deployment disables it, keeping sign-in available', async ({ start }) => {
+  vi.stubGlobal('dshDesktop', {})
+  vi.stubGlobal(ONBOARDING_CONFIG_GLOBAL, { desktopOnboarding: false })
+  const c = await start()
+  await c.mock.streams.opened('account/watch', 1)
+  expect(c.ctx.slots.entries('shell.overlay').some(entry => entry.options.id === 'desktop-onboarding')).toBe(false)
+  expect(c.ctx.slots.entries('settings.launcher')).toHaveLength(1)
+  expect(c.ctx.slots.entries('settings.models.sign-in')).toHaveLength(1)
+  expect(operations(c).hooks.account.getSnapshot().desktopOnboardingVisible).toBe(false)
+}, 60_000)
+
 withoutAccountAccess('opens no account stream and registers no account surface while the current Peer may not watch the account', async ({ start }) => {
   const c = await start()
   expect(c.mock.streams.end('account/watch')).toBe(0)
@@ -89,6 +101,8 @@ it('claims account balance notices from the frame-wide quota chain and declines 
     code: 'ACCOUNT_QUOTA', message: 'Request quota exhausted.', dismiss: vi.fn(), keepOpen: vi.fn(() => () => {}),
   }
   expect(select(notice)).toBe(notice)
+  const gatewayQuota: QuotaNoticeOwnerProps = { ...notice, code: 'INSUFFICIENT_QUOTA' }
+  expect(select(gatewayQuota)).toBe(gatewayQuota)
   expect(select({ ...notice, code: 'QUOTA' })).toBeNull()
 }, 60_000)
 
@@ -120,7 +134,7 @@ it('shares account actions across seats, publishes dialog ownership, and opens c
   off()
   actions.showLogin(false)
   expect(listener).toHaveBeenCalledTimes(2)
-  actions.contactUs()
+  actions.contactUs!()
   const signedOut = new URL(String(open.mock.calls.at(-1)![0]))
   expect(signedOut.searchParams.has('prefill_uid')).toBe(false)
   expect(signedOut.searchParams.get('hide_uid')).toBe('1')
@@ -130,7 +144,7 @@ it('shares account actions across seats, publishes dialog ownership, and opens c
   const entry = c.ctx.slots.entries('settings.section').find(entry => entry.options.id === 'account')!
   expect(entry.inject!()).toBe(actions)
   expect(resolveSlotLabel(entry.options.label)).toBe('Account')
-  actions.contactUs()
+  actions.contactUs!()
   const support = new URL(String(open.mock.calls.at(-1)![0]))
   expect(support.searchParams.get('prefill_uid')).toBe('account-user')
   expect(support.searchParams.get('hide_uid')).toBe('1')
@@ -147,7 +161,7 @@ it('shares account actions across seats, publishes dialog ownership, and opens c
   expect(support.searchParams.has('prefill_app_version')).toBe(false)
   c.mock.streams.push('account/watch', { type: 'snapshot', state: view })
   await vi.waitFor(() => { expect(actions.hooks.account.getSnapshot().view).toEqual(view) })
-  actions.contactUs()
+  actions.contactUs!()
   const signedOutAgain = new URL(String(open.mock.calls.at(-1)![0]))
   expect(signedOutAgain.searchParams.has('prefill_uid')).toBe(false)
   expect(signedOutAgain.searchParams.get('hide_uid')).toBe('1')
@@ -155,13 +169,19 @@ it('shares account actions across seats, publishes dialog ownership, and opens c
   expect(c.ctx.slots.entries('settings.launcher')).toHaveLength(0)
 }, 60_000)
 
+it('omits contactUs when contactFormUrl is empty or unconfigured', async ({ start }) => {
+  const c = await start()
+  expect(operations(c).contactUs).toBeUndefined()
+}, 60_000)
+
 it('prefills the native device description from the Desktop bridge on every click', async ({ start }) => {
+  vi.stubGlobal(CONTACT_CONFIG_GLOBAL, { contactFormUrl: 'https://example.test/form/' })
   const open = vi.spyOn(window, 'open').mockReturnValue(null)
   const deviceInfo = vi.fn(async () => 'platform=darwin; os=15.0; app_arch=arm64; cpu=Apple M3; memory_gib=16.0')
   vi.stubGlobal('dshDesktop', { deviceInfo })
   const c = await start()
   const actions = operations(c)
-  actions.contactUs()
+  actions.contactUs!()
   await vi.waitFor(() => { expect(open).toHaveBeenCalledOnce() })
   const first = new URL(String(open.mock.calls.at(-1)![0]))
   expect(first.searchParams.get('prefill_device_info'))
@@ -170,7 +190,7 @@ it('prefills the native device description from the Desktop bridge on every clic
   deviceInfo.mockResolvedValue('platform=win32; os=10.0; app_arch=x64; memory_gib=32.0')
   vi.stubGlobal('screen', { width: 1920, height: 1080 })
   vi.stubGlobal('devicePixelRatio', 1)
-  actions.contactUs()
+  actions.contactUs!()
   await vi.waitFor(() => { expect(open).toHaveBeenCalledTimes(2) })
   expect(new URL(String(open.mock.calls.at(-1)![0])).searchParams.get('prefill_device_info'))
     .toBe('platform=win32; os=10.0; app_arch=x64; memory_gib=32.0; screen_resolution=1920x1080')
@@ -178,11 +198,12 @@ it('prefills the native device description from the Desktop bridge on every clic
 }, 60_000)
 
 it('opens the questionnaire with screen resolution when the native read fails', async ({ start }) => {
+  vi.stubGlobal(CONTACT_CONFIG_GLOBAL, { contactFormUrl: 'https://example.test/form/' })
   const open = vi.spyOn(window, 'open').mockReturnValue(null)
   const deviceInfo = vi.fn(async (): Promise<string> => { throw new Error('platform ipc unavailable') })
   vi.stubGlobal('dshDesktop', { deviceInfo })
   const c = await start()
-  operations(c).contactUs()
+  operations(c).contactUs!()
   await vi.waitFor(() => { expect(open).toHaveBeenCalledOnce() })
   const url = new URL(String(open.mock.calls.at(-1)![0]))
   expect(url.searchParams.get('prefill_device_info')).toBe('screen_resolution=3024x1964')
@@ -192,6 +213,7 @@ it('opens the questionnaire with screen resolution when the native read fails', 
 }, 60_000)
 
 it('reports the account sampled by the click when a native read outlasts a sign-out', async ({ start }) => {
+  vi.stubGlobal(CONTACT_CONFIG_GLOBAL, { contactFormUrl: 'https://example.test/form/' })
   const open = vi.spyOn(window, 'open').mockReturnValue(null)
   const device = Promise.withResolvers<string>()
   vi.stubGlobal('dshDesktop', { deviceInfo: vi.fn(() => device.promise) })
@@ -200,7 +222,7 @@ it('reports the account sampled by the click when a native read outlasts a sign-
   c.mock.remote.account.getProfile.mockResolvedValue(ok(profile))
   c.mock.streams.push('account/watch', { type: 'snapshot', state: stored })
   await vi.waitFor(() => { expect(actions.hooks.account.getSnapshot().details?.profile).toEqual(profile) })
-  actions.contactUs()
+  actions.contactUs!()
   c.mock.streams.push('account/watch', { type: 'snapshot', state: view })
   await vi.waitFor(() => { expect(actions.hooks.account.getSnapshot().view).toEqual(view) })
   device.resolve('platform=darwin; os=15.0; app_arch=arm64; memory_gib=16.0')

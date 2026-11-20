@@ -50,7 +50,8 @@ export function adapter(config: Config = {}, dependencies: Partial<DeepSeekAdapt
 /**
  * Loopback Messages endpoint recording each model request.
  * @param reply - answers each Messages request.
- * @param listing - JSON body served for `GET /models`; omission leaves that request unanswered like any other.
+ * @param listing - JSON body served for `GET /models` and the account route's compact
+ *   `GET /v1/modelsinfo?type=text`; omission leaves those requests unanswered like any other.
  * @returns the endpoint base URL, recorded requests, and teardown.
  */
 export async function server(
@@ -62,7 +63,8 @@ export async function server(
     void handle(request, response).catch((error: unknown) => response.destroy(error as Error))
   })
   async function handle(request: import('node:http').IncomingMessage, response: ServerResponse) {
-    if (listing !== undefined && request.method === 'GET' && request.url === '/models') {
+    if (listing !== undefined && request.method === 'GET'
+      && (request.url === '/models' || request.url === '/v1/modelsinfo?type=text')) {
       response.setHeader('content-type', 'application/json')
       response.end(JSON.stringify(listing))
       return

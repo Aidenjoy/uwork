@@ -102,13 +102,16 @@ export interface DshDesktopProductApi {
    * @returns `name=value` fields separated by `; `, with no hostname, user name, or serial number.
    */
   deviceInfo(): Promise<string>
-  readonly updates: {
+  readonly updates?: {
     readonly channels: DesktopChannelBridge
     status(): Promise<DesktopUpdatePresentation>
     open(): Promise<void>
     subscribe(listener: (state: DesktopUpdatePresentation) => void): () => void
   }
 }
+
+/** Preload argv flag exposing self-hosted Desktop updates (`DSH_DESKTOP_UPDATES=1`). */
+export const DESKTOP_UPDATES_PRELOAD_ARG = '--dsh-desktop-updates'
 
 /** Scheme of Desktop-owned application documents. */
 export const SCHEME = 'dsh-app'

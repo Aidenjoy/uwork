@@ -15,6 +15,18 @@ export function providerErrorDetail(raw: unknown): string {
   return [fields.code, fields.type, fields.message].filter((value): value is string => typeof value === 'string').join(' ')
 }
 
+const GATEWAY_QUOTA_PATTERNS = [
+  /用户额度不足|预扣费额度失败|订阅额度不足|子额度上限/u,
+  /insufficient[\s_-]+(?:user|token)[\s_-]+quota/i,
+  /subscription quota insufficient|organization (?:member )?quota/i,
+] as const
+
+function isGatewayQuotaRejection(providerCode: string, detail: string): boolean {
+  return providerCode === 'insufficient_user_quota'
+    || providerCode === 'pre_consume_token_quota_failed'
+    || GATEWAY_QUOTA_PATTERNS.some(pattern => pattern.test(detail))
+}
+
 /** Classify a provider error without trusting arbitrary response fields.
  * @param raw - decoded response or in-band error event.
  * @param status - HTTP status when the error preceded streaming.
@@ -29,9 +41,9 @@ export function providerError(raw: unknown, status: number | undefined, headers?
   const detail = `${type} ${typeof error.code === 'string' ? error.code : ''} ${message}`
   let code: BuiltinLlmFailureCode
   const providerCode = typeof error.code === 'string' ? error.code : ''
-  // utoken reports an exhausted user quota with HTTP 403. Its /v1/messages
-  // body carries only a Chinese message (no `code`), so match the text too.
-  if (providerCode === 'insufficient_user_quota' || /用户额度不足|insufficient[\s_-]+user[\s_-]+quota/i.test(detail)) code = 'INSUFFICIENT_QUOTA'
+  // utoken reports exhausted wallet, subscription, org pool, or token quotas with HTTP 403.
+  // Its /v1/messages body carries only the localized message (no `code`), so match the text too.
+  if (isGatewayQuotaRejection(providerCode, detail)) code = 'INSUFFICIENT_QUOTA'
   else if (isAuthenticationFailure(status, type, providerCode)) code = 'AUTH'
   else if (isQuotaExceededError(detail) || status === 402) code = 'QUOTA'
   else if (status === 429 || type === 'rate_limit_error') code = 'RATE_LIMIT'

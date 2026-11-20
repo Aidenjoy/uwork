@@ -16,7 +16,7 @@ import type { AuthorizationSession } from '@deepseek-ai/dsh-authorization'
 import { readAccountDetail } from './details.ts'
 import { readNotificationContent, readNotifications, sendNotificationEvent } from './notifications.ts'
 import { revokeAccount, type LogoutRetryPolicy } from './logout.ts'
-import { AccountUnauthorizedError, PlatformAuthError, platformHeaders, platformOrigin, loginOrigin, desktopAuthorizeUrl, exchangeDesktopToken, desktopToken, desktopLanguageKey, desktopProfile, desktopUser, DESKTOP_CALLBACK_PATH } from './protocol.ts'
+import { AccountUnauthorizedError, PlatformAuthError, platformHeaders, platformOrigin, loginOrigin, desktopAuthorizeUrl, desktopRedirectUri, exchangeDesktopToken, desktopToken, desktopLanguageKey, desktopProfile, desktopUser, DESKTOP_CALLBACK_PATH } from './protocol.ts'
 
 export type * from './types.ts'
 export { isPrivateHttpHost } from './protocol.ts'
@@ -457,10 +457,11 @@ export class DeepSeekAccount extends TypertRemoteService {
   }
 
   /**
-   * Remove an inference-rejected credential: the language key on its own, or the whole grant when the
-   * access token itself was rejected. A rejected key does not prove the login is gone.
+   * Remove an inference-rejected credential and expire the account session when the stored access
+   * token or language key is rejected, so the UI prompts a fresh sign-in instead of stranding the
+   * user in a signed-in state whose model requests all fail.
    * @param token - token captured by the rejected inference request.
-   * @returns after matching credentials are removed and, for a rejected grant, expiry is notified.
+   * @returns after matching credentials are removed and expiry is notified.
    */
   async rejectToken(token: string): Promise<void> {
     const lifetime = this.detailsLifetime
@@ -469,17 +470,26 @@ export class DeepSeekAccount extends TypertRemoteService {
     // a key that is not the grant is the independently revocable language key.
     const speech = await this.ctx.credentials.readRecord(SPEECH)
     const parsedSpeech = speech?.kind === 'grant' ? speechGrant.safeParse(speech.payload) : undefined
-    const languageKey = parsedSpeech?.success === true && parsedSpeech.data.key === token
+    const languageKey = parsedSpeech?.success === true
+      && parsedSpeech.data.issuer === this.origin
+      && parsedSpeech.data.key === token
     // A rejection names the credential the request used; logging only its role keeps the secret out of
     // the log while distinguishing an access token from the long-lived language key.
     console.error('[deepseek-account] rejectToken called', {
       tokenShape: languageKey ? 'language-key' : 'access-token',
       matchesStoredGrant: stored?.token === token,
     })
-    // utoken mints a second, independently revocable key for model traffic. Dropping only that key makes
-    // the next request ask for a fresh sign-in instead of discarding a grant that may still be valid.
+    // Model traffic authenticates exclusively with the language key and there is no silent refresh
+    // path to mint another without signing in again. Leaving KEY intact after dropping SPEECH strands
+    // the UI as "signed in" while every turn fails with ACCOUNT_SIGN_IN_REQUIRED, so expire the
+    // session together with the revoked key.
     if (languageKey) {
-      if (this.detailsLifetime === lifetime && !this.closed) await this.ctx.credentials.deleteRecord(SPEECH)
+      if (this.detailsLifetime !== lifetime || this.closed) return
+      if (stored !== null) {
+        await this.expireCredential(stored.token, lifetime)
+      } else {
+        await this.ctx.credentials.deleteRecord(SPEECH)
+      }
       return
     }
     if (stored?.token !== token || this.detailsLifetime !== lifetime) return
@@ -804,11 +814,10 @@ export class DeepSeekAccount extends TypertRemoteService {
   }
 
   private revoke(token: string, headers: Record<string, string>): void {
-    // The DeepSeek logout endpoint does not exist on gateway deployments; local removal still
-    // completes in signOut(), so skip the remote revocation retries entirely on those origins.
-    if (this.closed || !this.platformAccountApis) return
+    if (this.closed) return
+    const mode = this.platformAccountApis ? 'platform' : 'desktop'
     const revocation = revokeAccount(this.origin, token, this.logoutPolicy,
-      this.logoutLifetime.signal, { ...this.requestHeaders, ...headers }).finally(() => { this.revocations.delete(revocation) })
+      this.logoutLifetime.signal, { ...this.requestHeaders, ...headers }, mode).finally(() => { this.revocations.delete(revocation) })
     this.revocations.add(revocation)
   }
 
@@ -849,7 +858,7 @@ export class DeepSeekAccount extends TypertRemoteService {
     signal.addEventListener('abort', abort, { once: true })
     try {
       signal.throwIfAborted()
-      const redirectUri = `${attempt.origin}${DESKTOP_CALLBACK_PATH}`
+      const redirectUri = desktopRedirectUri(attempt.origin)
       // utoken (new-api) serves the authorization page directly; no init round-trip.
       const authorizeUrl = desktopAuthorizeUrl(this.origin, redirectUri, state, challenge)
       this.update(attempt, { phase: 'waiting-browser', authorizeUrl, expiresAt })
@@ -857,7 +866,9 @@ export class DeepSeekAccount extends TypertRemoteService {
       signal.throwIfAborted()
       this.update(attempt, { phase: 'exchanging' })
       const result = desktopToken.safeParse(await exchangeDesktopToken(
-        this.origin, receivedCode, redirectUri, verifier, signal, { ...this.requestHeaders, ...attempt.clientHeaders }))
+        this.origin, receivedCode, redirectUri, verifier,
+        AbortSignal.any([signal, AbortSignal.timeout(this.requestTimeout)]),
+        { ...this.requestHeaders, ...attempt.clientHeaders }))
       if (!result.success) this.rejectPayload('desktop_token', result.error)
       if (Date.now() >= expiresAt) deadline.abort()
       signal.throwIfAborted()

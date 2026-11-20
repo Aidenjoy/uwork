@@ -28,6 +28,14 @@ const KNOWN_NAMES = new Set([
   'DSH_INFERENCE_ORIGIN',
   'DSH_ACCOUNT_INSECURE',
   'DEEPSEEK_BASE_URL',
+  'DSH_DEFAULT_MODEL',
+  'DSH_ACCOUNT_USAGE_PATH',
+  'DSH_ACCOUNT_TOPUP_PATH',
+  'DSH_PLATFORM_ACCOUNT_APIS',
+  'DSH_ACCOUNT_EMBEDDED_PAGES',
+  'DSH_ACCOUNT_ONBOARDING',
+  'DSH_CONTACT_FORM_URL',
+  'DSH_DESKTOP_UPDATES',
 ])
 
 /** Pick the configuration file: explicit flag, `$YUN_CONFIG`, then the repository root. */
@@ -60,7 +68,7 @@ function loadDocument(path) {
 
 /** Resolve one preset into a plain string-valued environment map. */
 function resolveProfile(document, name) {
-  const profile = document.profiles[name]
+  const profile = Object.hasOwn(document.profiles, name) ? document.profiles[name] : undefined
   if (profile === undefined) {
     const available = Object.keys(document.profiles).join(', ') || '(空)'
     throw new Error(`配置文件中没有预设 "${name}"，可用：${available}`)
@@ -70,20 +78,26 @@ function resolveProfile(document, name) {
   }
   const env = {}
   for (const [key, value] of Object.entries(profile)) {
-    if (typeof value === 'object' && value !== null) {
+    if (!KNOWN_NAMES.has(key)) {
+      process.stderr.write(`yun-env: 已忽略不在白名单内的变量：${name}.${key}\n`)
+      continue
+    }
+    if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
       throw new Error(`预设 "${name}" 的 ${key} 必须是字符串、数字或布尔值`)
     }
     env[key] = String(value)
-    if (!KNOWN_NAMES.has(key)) {
-      process.stderr.write(`yun-env: 提示：${name}.${key} 不是桌面端已知的后端路由变量\n`)
-    }
   }
   return env
 }
 
-/** Compose the child environment: the file wins over the ambient shell for clarity. */
+/** Compose the child environment: explicit shell variables win over the preset file, matching launch-config. */
 function childEnvironment(env) {
-  return { ...process.env, ...env }
+  const merged = { ...process.env }
+  for (const [key, value] of Object.entries(env)) {
+    if (merged[key] !== undefined) continue
+    merged[key] = value
+  }
+  return merged
 }
 
 function printUsage() {

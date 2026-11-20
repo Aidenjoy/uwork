@@ -3,14 +3,14 @@ import z from '@deepseek-ai/schemastery'
 
 /** Questionnaire destination shared by Host and Client. */
 export interface ContactConfig {
-  /** HTTPS questionnaire URL; override for a test form. */
+  /** HTTPS questionnaire URL; empty hides the Feedback menu entry, or override with a support form URL. */
   contactFormUrl: string
   /** Questionnaire source option; empty until Harness is supported by the form. */
   contactSource: string
 }
 /** Validate public questionnaire options. */
 export const ContactConfigFields = {
-  contactFormUrl: z.string().pattern(/^https:\/\/[^/\s]+\//).default('https://trtgsjkv6r.feishu.cn/share/base/form/shrcnlCoGElW7MQznGy9r3YYXcg?hide_uid=1&hide_device_info=1&hide_harness_version=1'),
+  contactFormUrl: z.string().pattern(/^(?:$|https:\/\/[^/?#\s]+(?:[/?#][^\s]*)?)$/).default(''),
   contactSource: z.string().default(''),
 }
 /** Validate public questionnaire options. */

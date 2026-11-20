@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import type { MenuItemConstructorOptions, MessageBoxOptions } from 'electron'
-import { DESKTOP_IPC, type DesktopUpdateState } from '../src/ipc.ts'
+import { DESKTOP_IPC, DESKTOP_UPDATES_PRELOAD_ARG, type DesktopUpdateState } from '../src/ipc.ts'
 import { MANDATORY_IPC } from '../src/mandatory-update-ipc.ts'
 import { DesktopHostFatalError, DesktopHostUncleanExitError } from '../src/host-process.ts'
 import { en, zh } from '../src/locale.ts'
@@ -821,9 +821,9 @@ describe('desktop main startup', () => {
     const menu = applicationMenuItems()
     const visible = menu.filter(item => item.visible !== false)
     expect(visible.map(item => item.role === 'quit' ? 'quit' : item.label ?? item.type)).toEqual([
-      messages.aboutMenu, 'separator', messages.checkUpdatesMenu,
-      ...platform === 'linux' ? [] : [messages.cliCommandMenu],
-      'separator', ...packaged ? [] : [messages.reloadPageMenu, messages.restartAppHostMenu],
+      messages.aboutMenu, 'separator',
+      ...platform === 'linux' ? [] : [messages.cliCommandMenu, 'separator'],
+      ...packaged ? [] : [messages.reloadPageMenu, messages.restartAppHostMenu],
       messages.toggleDevToolsMenu, 'separator',
       ...platform === 'darwin' ? [messages.hideApplication, messages.hideOtherApplications, messages.showAllApplications, 'separator'] : [],
       'quit',
@@ -923,6 +923,7 @@ describe('desktop main startup', () => {
   })
 
   it('checks updates from the application menu without offering disabled test authentication', async () => {
+    vi.stubEnv('DSH_DESKTOP_UPDATES', '1')
     configureTestAuthPopup(false)
     harness.embeddedPolicy = { origin: 'https://policy.example.com', authentication: 'feishu-test',
       allowedAuthOrigins: ['https://login.example.com'], allowedPageOrigins: ['https://downloads.example.com'] }
@@ -1107,6 +1108,7 @@ describe('desktop main startup', () => {
   it('persists opt-in update evidence from the real main entry without private diagnostics', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'dsh-main-update-journal-'))
     try {
+      vi.stubEnv('DSH_DESKTOP_UPDATES', '1')
       vi.stubEnv('DSH_DESKTOP_UPDATE_JOURNAL_DIR', directory)
       await readyForUpdate()
       harness.publishUpdate({ phase: 'error', failedOperation: 'download', version: '1.2.3', message: 'ENOSPC secret-url' })
@@ -1391,7 +1393,7 @@ describe('desktop main startup', () => {
     expect(() => handler(event, 'application', NaN, 34)).toThrow('invalid popup request')
     const application = handler(event, 'application', 48, 34)
     expect(harness.menu.buildFromTemplate.mock.lastCall![0].map(item => item.label ?? item.type)).toEqual([
-      '关于云大师 Agent', 'separator', '检查更新…', '管理 dsh 命令…', 'separator', zh.toggleDevToolsMenu, 'separator', '退出',
+      '关于云大师 Agent', 'separator', '管理 dsh 命令…', 'separator', zh.toggleDevToolsMenu, 'separator', '退出',
     ])
     expect(harness.popup.mock.lastCall![0]).toMatchObject({ window, x: 48, y: 34 })
     expect(harness.popup.mock.lastCall![0].callback).toBeTypeOf('function')
@@ -1439,8 +1441,8 @@ describe('desktop main startup', () => {
       : undefined)
     const application = template[0]!.submenu as MenuItemConstructorOptions[]
     expect(application.filter(item => item.visible !== false).map(describeItem)).toEqual(platform === 'darwin'
-      ? ['about', 'separator', en.checkUpdatesMenu, en.cliCommandMenu, 'separator', 'toggleDevTools', 'separator', 'hide', 'hideOthers', 'unhide', 'separator', 'quit']
-      : ['about', 'separator', en.checkUpdatesMenu, 'separator', 'toggleDevTools', 'separator', 'quit'])
+      ? ['about', 'separator', en.cliCommandMenu, 'separator', 'toggleDevTools', 'separator', 'hide', 'hideOthers', 'unhide', 'separator', 'quit']
+      : ['about', 'separator', 'toggleDevTools', 'separator', 'quit'])
     expect(harness.menu.setApplicationMenu).toHaveBeenCalledOnce()
   })
 
@@ -1993,6 +1995,7 @@ describe('desktop main startup', () => {
   })
 
   it('shares the failed-check deadline across focus and resume, while explicit checks reset polling', async () => {
+    vi.stubEnv('DSH_DESKTOP_UPDATES', '1')
     vi.stubEnv('DSH_DESKTOP_UPDATE_CHECK_INTERVAL_MS', '1000')
     vi.stubEnv('DSH_DESKTOP_UPDATE_CHECK_MAX_BACKOFF_MS', '4000')
     vi.stubEnv('DSH_DESKTOP_UPDATE_CHECK_JITTER', '0')
@@ -2074,6 +2077,7 @@ describe('desktop main startup', () => {
   })
 
   it('keeps one checking dialog open until the manual check settles, then reports the current version', async () => {
+    vi.stubEnv('DSH_DESKTOP_UPDATES', '1')
     await readyForUpdate()
     const checked = Promise.withResolvers<DesktopUpdateState>()
     const checking = Promise.withResolvers<AbortSignal>()
@@ -2110,6 +2114,7 @@ describe('desktop main startup', () => {
     { phase: 'idle' },
     { phase: 'error', failedOperation: 'check', message: 'Old feed unavailable' },
   ] satisfies DesktopUpdateState[])('discards a manual check result after switching channel: $phase', async (result) => {
+    vi.stubEnv('DSH_DESKTOP_UPDATES', '1')
     await readyForUpdate()
     const checked = Promise.withResolvers<DesktopUpdateState>()
     const requested = Promise.withResolvers<undefined>()
@@ -2181,6 +2186,7 @@ describe('desktop main startup', () => {
   })
 
   it('lets a confirmed mandatory policy preempt an ordinary result dialog', async () => {
+    vi.stubEnv('DSH_DESKTOP_UPDATES', '1')
     harness.embeddedPolicy = { origin: 'https://policy.example.com',
       allowedPageOrigins: ['https://downloads.example.com'] }
     const policy = Promise.withResolvers<Response>()
@@ -2247,6 +2253,7 @@ describe('desktop main startup', () => {
   })
 
   it('downloads on the first click and opens installation confirmation only after readiness', async () => {
+    vi.stubEnv('DSH_DESKTOP_UPDATES', '1')
     await readyForUpdate()
     harness.updateState = { phase: 'available', version: '1.0.1-nightly.1' }
     const downloading = Promise.withResolvers<DesktopUpdateState>()
@@ -2286,6 +2293,7 @@ describe('desktop main startup', () => {
   })
 
   it.each(['downloading', 'verifying'] as const)('explains %s when checking from the menu without another update operation', async (phase) => {
+    vi.stubEnv('DSH_DESKTOP_UPDATES', '1')
     await readyForUpdate()
     harness.updateState = { phase, version: '1.0.1-nightly.1', percent: 21 }
     const checks = harness.updateCheck.mock.calls.length
@@ -3093,6 +3101,23 @@ describe('desktop main startup', () => {
     expect(host.stop).toHaveBeenCalledTimes(1)
     expect(window.urls).toEqual(['dsh-app://app/'])
     expect(harness.windows).toHaveLength(1)
+  })
+
+  it('hides desktop update entry points and skips automatic update checks by default', async () => {
+    await readyForUpdate()
+    expect(applicationMenuItems().find(item => item.label === en.checkUpdatesMenu)).toBeUndefined()
+    const options = harness.windows[0]!.options as { webPreferences?: { additionalArguments?: string[] } }
+    expect(options.webPreferences?.additionalArguments ?? []).not.toContain(DESKTOP_UPDATES_PRELOAD_ARG)
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(harness.updateCheck).not.toHaveBeenCalled()
+  })
+
+  it('exposes desktop update entry points when DSH_DESKTOP_UPDATES is enabled', async () => {
+    vi.stubEnv('DSH_DESKTOP_UPDATES', '1')
+    await readyForUpdate()
+    expect(applicationMenuItems().find(item => item.label === en.checkUpdatesMenu)).toBeDefined()
+    const options = harness.windows[0]!.options as { webPreferences?: { additionalArguments?: string[] } }
+    expect(options.webPreferences?.additionalArguments).toContain(DESKTOP_UPDATES_PRELOAD_ARG)
   })
 })
 

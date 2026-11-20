@@ -3,9 +3,14 @@ import { expect, it } from 'vitest'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { Config, plainAccountOptions, resolveAccountOptions } from '../src/config.ts'
 
-it('derives the listing endpoint from the Messages origin and applies the cache defaults', () => {
-  expect(resolveAccountOptions({}).catalog).toEqual({ url: 'https://api.deepseek.com/models', timeoutMs: 5_000, maxAgeMs: 600_000 })
-  expect(resolveAccountOptions({ baseURL: 'http://127.0.0.1:9/anthropic' }).catalog.url).toBe('http://127.0.0.1:9/models')
+it('derives the compact gateway listing endpoint from the Messages origin and applies the cache defaults', () => {
+  expect(resolveAccountOptions({}).catalog).toEqual({
+    url: 'https://api.deepseek.com/v1/modelsinfo?type=text', timeoutMs: 5_000, maxAgeMs: 600_000,
+  })
+  expect(resolveAccountOptions({ baseURL: 'http://127.0.0.1:9/anthropic' }).catalog.url)
+    .toBe('http://127.0.0.1:9/v1/modelsinfo?type=text')
+  expect(resolveAccountOptions({ baseURL: 'http://127.0.0.1:9/v1/' }).catalog.url)
+    .toBe('http://127.0.0.1:9/v1/modelsinfo?type=text')
 })
 
 it.each([

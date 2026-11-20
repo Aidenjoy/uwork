@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest'
-import { logoutAccount, requestAccount, requestNotificationEvent, requestPlatform, requestNotifications } from '../src/protocol.ts'
+import { exchangeDesktopToken, logoutAccount, requestAccount, requestNotificationEvent, requestPlatform, requestNotifications, revokeDesktopSession } from '../src/protocol.ts'
 import type { AccountNotificationId } from '@deepseek-ai/dsh-deepseek-account/types'
 import { readAccountDetail } from '../src/details.ts'
 import { readNotifications } from '../src/notifications.ts'
@@ -263,6 +263,61 @@ it('reports invalid profile fields once without logging profile values', async (
     expect(logged).toContain('email')
     expect(logged).toContain('invalid_type')
     expect(logged).not.toContain('private-')
+  } finally {
+    fetcher.mockRestore()
+    output.mockRestore()
+  }
+})
+
+it('cancels an oversized desktop token stream at the 4 KiB byte bound without buffering the tail', async () => {
+  const output = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+  let pulls = 0
+  let cancelled = false
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      pulls += 1
+      controller.enqueue(new Uint8Array(2_048).fill(0x78))
+    },
+    cancel() { cancelled = true },
+  })
+  const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(stream, { status: 200 }))
+  try {
+    await expect(exchangeDesktopToken(
+      'https://token.example.test', 'code', 'http://127.0.0.1:4321/desktop-auth/callback',
+      'verifier', new AbortController().signal, {},
+    )).rejects.toThrow('account: protocol')
+    expect(cancelled).toBe(true)
+    expect(pulls).toBeLessThanOrEqual(4)
+    expect(JSON.stringify(output.mock.calls)).toContain('body-limit')
+  } finally {
+    fetcher.mockRestore()
+    output.mockRestore()
+  }
+})
+
+it('handles desktop session revocation outcomes without leaking the bearer token', async () => {
+  const output = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+  const fetcher = vi.spyOn(globalThis, 'fetch')
+  const secretToken = 'secret-desktop-access-token'
+  try {
+    fetcher.mockResolvedValueOnce(new Response(null, { status: 204 }))
+    await revokeDesktopSession('https://token.example.test', secretToken, new AbortController().signal, {})
+    expect(output).not.toHaveBeenCalled()
+
+    fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'invalid_token' }), { status: 401 }))
+    await revokeDesktopSession('https://token.example.test', secretToken, new AbortController().signal, {})
+    expect(output).not.toHaveBeenCalled()
+
+    fetcher.mockResolvedValueOnce(new Response('private-upstream-error', { status: 500 }))
+    await expect(
+      revokeDesktopSession('https://token.example.test', secretToken, new AbortController().signal, {}),
+    ).rejects.toThrow('account: network')
+    expect(output).toHaveBeenCalledOnce()
+    const logged = JSON.stringify(output.mock.calls)
+    expect(logged).toContain('/api/desktop-auth/revoke')
+    expect(logged).toContain('500')
+    expect(logged).not.toContain(secretToken)
+    expect(logged).not.toContain('private-upstream-error')
   } finally {
     fetcher.mockRestore()
     output.mockRestore()

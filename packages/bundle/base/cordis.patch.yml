@@ -42,6 +42,9 @@
 
     - id: session-log-deepseek
       name: '@deepseek-ai/dsh-session-log-deepseek'
+      # utoken does not consume DeepSeek's private dsh_session_log request field; keep disabled so
+      # conversation logs are not attached to inference requests.
+      disabled: true
 
     - id: typert
       name: '@deepseek-ai/dsh-typert-registry'
@@ -84,6 +87,8 @@
 
     - id: plugin-package-inventory-deepseek
       name: '@deepseek-ai/dsh-plugin-package-inventory-deepseek'
+      # utoken does not consume DeepSeek's private dsh_plugin_packages request field.
+      disabled: true
 
     # The transport-independent default for Agents created by entry points.
     # Settings may supply a saved selection; consumers read it at creation time.

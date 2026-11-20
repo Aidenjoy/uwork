@@ -123,6 +123,8 @@ describe('frame-wide quota notices', () => {
     expect(notice.getSnapshot()).toMatchObject({ code: 'QUOTA' })
     // An unretained later notice rekeys the surface so its display restarts.
     expect(notice.getSnapshot()?.seq).not.toBe(first)
+    await b.runtime.sessions.appendEvent(SID, quotaEntry(2, 'INSUFFICIENT_QUOTA'))
+    expect(notice.getSnapshot()).toMatchObject({ code: 'INSUFFICIENT_QUOTA' })
   })
 
   it('never publishes for history replacement or paging, or for other failures', async () => {

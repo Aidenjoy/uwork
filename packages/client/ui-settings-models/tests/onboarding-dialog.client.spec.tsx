@@ -66,6 +66,7 @@ function deepSeekNamespace(apiKeyEnv: string | null): SettingsNamespaceView {
 
 function harness(options: {
   provider?: boolean
+  extraProviders?: { id: string; name: string }[]
   providerSettingsNs?: string
   providerActive?: boolean
   settingsNamespace?: boolean
@@ -76,6 +77,7 @@ function harness(options: {
   settingsWritable?: boolean
   providersFailure?: string
   setFailure?: string
+  onAddThirdParty?: () => void
 } = {}) {
   if (document.getElementById('root') === null) {
     const appRoot = document.createElement('div')
@@ -95,11 +97,10 @@ function harness(options: {
     llm: {
       listProviders: () => {
         if (options.providersFailure !== undefined) return Promise.resolve(remoteFail(options.providersFailure))
-        return Promise.resolve(remoteOk(
-          options.provider === false || options.providerActive === false
-            ? []
-            : [{ id: 'deepseek-official', name: 'DeepSeek' }],
-        ))
+        const official = options.provider === false || options.providerActive === false
+          ? []
+          : [{ id: 'deepseek-official', name: 'DeepSeek' }]
+        return Promise.resolve(remoteOk([...official, ...(options.extraProviders ?? [])]))
       },
       listConfigurableProviders: () => Promise.resolve(remoteOk(
         options.provider === false
@@ -145,6 +146,7 @@ function harness(options: {
   const unusedHook = (() => { throw new Error('unused standard hook') }) as never
   const props: DeepSeekOnboardingDialogProps = {
     automatic: true,
+    ...options.onAddThirdParty === undefined ? {} : { onAddThirdParty: options.onAddThirdParty },
     stepId: 'deepseek-official',
     complete,
     openSection,
@@ -314,4 +316,41 @@ it('keeps explicit API key setup available when automatic onboarding is disabled
   render(<DeepSeekOnboardingDialog {...h.props} />)
   await waitFor(() => { expect(screen.getByRole('dialog')).toBeTruthy() })
   expect(h.complete).not.toHaveBeenCalled()
+})
+
+it('redirects explicit API key requests to Models third-party setup when official DeepSeek is disabled', async () => {
+  const onAddThirdParty = vi.fn()
+  const h = harness({ provider: false, settingsNamespace: false, onAddThirdParty })
+  h.props.automatic = false
+  h.props.explicit = true
+  render(<DeepSeekOnboardingDialog {...h.props} />)
+  await waitFor(() => { expect(h.openSection).toHaveBeenCalledWith('models') })
+  expect(onAddThirdParty).toHaveBeenCalledOnce()
+  expect(h.complete).toHaveBeenCalledOnce()
+  expect(screen.queryByRole('dialog')).toBeNull()
+})
+
+it('redirects explicit API key requests to Models when another provider is ready and official DeepSeek is absent', async () => {
+  const onAddThirdParty = vi.fn()
+  const h = harness({
+    provider: false,
+    settingsNamespace: false,
+    extraProviders: [{ id: 'openai', name: 'OpenAI' }],
+    onAddThirdParty,
+  })
+  h.props.automatic = false
+  h.props.explicit = true
+  render(<DeepSeekOnboardingDialog {...h.props} />)
+  await waitFor(() => { expect(h.openSection).toHaveBeenCalledWith('models') })
+  expect(onAddThirdParty).toHaveBeenCalledOnce()
+  expect(h.complete).toHaveBeenCalledOnce()
+})
+
+it('closes automatic onboarding when official DeepSeek is absent without redirecting to Models', async () => {
+  const onAddThirdParty = vi.fn()
+  const h = harness({ provider: false, settingsNamespace: false, onAddThirdParty })
+  render(<DeepSeekOnboardingDialog {...h.props} />)
+  await waitFor(() => { expect(h.complete).toHaveBeenCalledOnce() })
+  expect(onAddThirdParty).not.toHaveBeenCalled()
+  expect(h.openSection).not.toHaveBeenCalled()
 })

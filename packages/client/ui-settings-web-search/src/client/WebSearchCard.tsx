@@ -73,9 +73,7 @@ export function WebSearchCard(props: WebSearchCardProps) {
           section={search} disabled={menuDisabled} field="searchProvider" onSelect={props.selectProvider}
           providersFailed={state.providersFailed} onRetry={props.retryProviders}
           description={describe(search)}
-          hint={search.kind === 'deepseek'
-            ? <a className={styles.link} href={t('searchGuideUrl')} target="_blank" rel="noopener noreferrer">{t('searchGuide')}</a>
-            : search.kind === 'plugin' ? t('pluginProviderHint') : undefined} />
+          hint={search.kind === 'plugin' ? t('pluginProviderHint') : undefined} />
         {search.kind === 'deepseek' && (
           <div className={styles.panel}>
             <SettingsValueField id="plugin-config-web-search-count" label={t('count')} hint={t('countHint')} numeric

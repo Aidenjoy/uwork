@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { setTimeout } from 'node:timers/promises'
-import { logoutAccount } from '../src/protocol.ts'
+import { logoutAccount, revokeDesktopSession } from '../src/protocol.ts'
 import { revokeAccount } from '../src/logout.ts'
 
 vi.mock('node:timers/promises', () => ({ setTimeout: vi.fn() }))
-vi.mock('../src/protocol.ts', () => ({ logoutAccount: vi.fn() }))
+vi.mock('../src/protocol.ts', () => ({ logoutAccount: vi.fn(), revokeDesktopSession: vi.fn() }))
 beforeEach(() => {
   vi.resetAllMocks()
   vi.mocked(setTimeout).mockResolvedValue(undefined)
@@ -72,4 +72,15 @@ it('cancels a pending delay and never starts another request', async () => {
 it('does not start work for an already closed provider', async () => {
   await revokeAccount('https://platform.deepseek.com', 'old-token', policy, AbortSignal.abort(), {})
   expect(logoutAccount).not.toHaveBeenCalled()
+})
+
+it('uses the desktop revoke endpoint and retries on failure in desktop mode', async () => {
+  vi.mocked(revokeDesktopSession).mockRejectedValueOnce(new Error('offline')).mockResolvedValue(undefined)
+  await revokeAccount('https://token.yundashi.com', 'old-desktop-token', policy, new AbortController().signal, {}, 'desktop')
+  expect(logoutAccount).not.toHaveBeenCalled()
+  expect(revokeDesktopSession).toHaveBeenCalledTimes(2)
+  expect(setTimeout).toHaveBeenCalledTimes(1)
+  expect(vi.mocked(revokeDesktopSession).mock.calls[0]).toEqual([
+    'https://token.yundashi.com', 'old-desktop-token', expect.any(AbortSignal), {},
+  ])
 })

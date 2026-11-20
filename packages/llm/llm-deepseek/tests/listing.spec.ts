@@ -4,7 +4,9 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import { afterEach, describe, expect, it } from 'vitest'
 import { APP_IDENTITY } from '@deepseek-ai/dsh-llm'
 import { deadline } from '@deepseek-ai/dsh-timeout'
-import { LISTING_TIMEOUT, MAX_BADGE_TEXT_LENGTH, modelListingURL, parseModelListing, requestModelListing } from '../src/listing.ts'
+import {
+  gatewayModelListingURL, LISTING_TIMEOUT, MAX_BADGE_TEXT_LENGTH, modelListingURL, parseModelListing, requestModelListing,
+} from '../src/listing.ts'
 import type { ListedCapabilities } from '../src/listing.ts'
 
 /** The listing the service returned to an account token on 2026-09-24. */
@@ -40,6 +42,103 @@ describe('modelListingURL', () => {
   })
 })
 
+describe('gatewayModelListingURL', () => {
+  it.each([
+    ['http://10.1.2.3:3000', 'http://10.1.2.3:3000/v1/modelsinfo?type=text'],
+    ['http://10.1.2.3:3000/', 'http://10.1.2.3:3000/v1/modelsinfo?type=text'],
+    ['http://10.1.2.3:3000/v1', 'http://10.1.2.3:3000/v1/modelsinfo?type=text'],
+    ['http://10.1.2.3:3000/v1/', 'http://10.1.2.3:3000/v1/modelsinfo?type=text'],
+    ['https://token.yundashi.com/anthropic', 'https://token.yundashi.com/v1/modelsinfo?type=text'],
+  ])('lists %s at %s', (baseURL, expected) => {
+    expect(gatewayModelListingURL(baseURL)).toBe(expected)
+  })
+})
+
+/** The compact `/v1/modelsinfo?type=text` shape served by new-api gateways. */
+const COMPACT = {
+  object: 'list',
+  success: true,
+  data: [
+    { id: 'deepseek-v4-flash', object: 'model', created: 1626777600, owned_by: 'volcengine', type: 'text' },
+    { id: 'claude-fable-5', object: 'model', created: 1626777600, owned_by: 'claude', type: 'text',
+      context_window: 1, max_output_tokens: 128 },
+    { id: 'kimi-k3', object: 'model', created: 1626777600, owned_by: 'volcengine', type: 'text' },
+    { id: 'gpt-5', object: 'model', created: 1626777600, owned_by: 'openai', type: 'text' },
+    { id: 'qwen3-coder-plus', object: 'model', created: 1626777600, owned_by: 'volcengine', type: 'text' },
+    { id: 'glm-4.5v', object: 'model', created: 1626777600, owned_by: 'volcengine', type: 'text' },
+    { id: 'gemini-2.5-pro', object: 'model', created: 1626777600, owned_by: 'google gemini', type: 'text' },
+    { id: 'doubao-seed-1-6-250615', object: 'model', created: 1626777600, owned_by: 'volcengine', type: 'text' },
+    { id: 'text-embedding-3-large', object: 'model', created: 1626777600, owned_by: 'openai', type: 'text' },
+    { id: 'neutral-chat-lite', object: 'model', created: 1626777600, owned_by: 'xai', type: 'text',
+      context_window: -1, max_output_tokens: 'unreadable' },
+  ],
+}
+
+describe('parseModelListing of a compact gateway listing', () => {
+  it('offers the text models and keeps the listing authoritative', () => {
+    const listing = parseModelListing(COMPACT)
+    expect(listing.gateway).toBe(true)
+    expect(listing.skipped).toBe(0)
+    expect(listing.entries).toHaveLength(10)
+    expect(listing.entries.filter(entry => entry.capabilities.usable)).toHaveLength(9)
+    expect(listing.entries.map(entry => entry.id)).toContain('deepseek-v4-flash')
+    expect(listing.entries.find(entry => entry.id === 'deepseek-v4-flash')?.capabilities).toEqual({
+      usable: true, facts: { inputModalities: ['text'] },
+    })
+    // `context_window: 1` is a positive safe integer; filtering bad upstream values is not this layer's job.
+    expect(listing.entries.find(entry => entry.id === 'claude-fable-5')?.capabilities).toEqual({
+      usable: true, facts: { inputModalities: ['text'], contextWindow: 1, maxOutputTokens: 128 },
+    })
+  })
+
+  it('still refuses blacklisted ids and non-text or non-chat endpoint declarations', () => {
+    const listing = parseModelListing(COMPACT)
+    expect(listing.entries.find(entry => entry.id === 'text-embedding-3-large')?.capabilities).toEqual({
+      usable: false, reason: 'is not a chat language model',
+    })
+    expect(only({ type: 'image' })?.capabilities).toEqual({ usable: false, reason: 'is not a chat language model' })
+    expect(only({ type: 'text', supported_endpoint_types: ['openai', 'embeddings'] })?.capabilities).toEqual({
+      usable: false, reason: 'is not a chat language model',
+    })
+  })
+
+  it('ignores unreadable capacities instead of rejecting the model', () => {
+    expect(parseModelListing(COMPACT).entries.find(entry => entry.id === 'neutral-chat-lite')?.capabilities).toEqual({
+      usable: true, facts: { inputModalities: ['text'] },
+    })
+    expect(only({ type: 'TEXT' })?.capabilities).toEqual({ usable: true, facts: { inputModalities: ['text'] } })
+  })
+
+  it('keeps self-described and endpoint-type entries unchanged beside a compact row', () => {
+    const listing = parseModelListing({ data: [
+      { id: 'deepseek-v4-pro', ...MESSAGES, context_window: 1_048_576 },
+      { id: 'kimi-k3', supported_endpoint_types: ['openai'] },
+      { id: 'compact', type: 'text' },
+    ] })
+    expect(listing.gateway).toBe(false)
+    expect(listing.entries.map(entry => entry.selfDescribed)).toEqual([true, false, false])
+    expect(listing.entries[0]?.capabilities).toEqual({
+      usable: true, facts: { inputModalities: ['text'], contextWindow: 1_048_576 },
+    })
+    expect(listing.entries[1]?.capabilities).toEqual({ usable: true, facts: { inputModalities: ['text'] } })
+    expect(listing.entries[2]?.capabilities).toEqual({ usable: true, facts: { inputModalities: ['text'] } })
+  })
+
+  it('keeps gateway mode when compact rows include image or video types', () => {
+    const listing = parseModelListing({ data: [
+      { id: 'claude-opus-5', type: 'text' },
+      { id: 'flux-1', type: 'image' },
+      { id: 'veo-3', type: 'video' },
+    ] })
+    expect(listing.gateway).toBe(true)
+    expect(listing.entries.map(entry => [entry.id, entry.capabilities])).toEqual([
+      ['claude-opus-5', { usable: true, facts: { inputModalities: ['text'] } }],
+      ['flux-1', { usable: false, reason: 'is not a chat language model' }],
+      ['veo-3', { usable: false, reason: 'is not a chat language model' }],
+    ])
+  })
+})
+
 describe('parseModelListing of a gateway listing', () => {
   const GATEWAY = { data: [{ id: 'kimi-k3', object: 'model', owned_by: 'volcengine', supported_endpoint_types: ['openai'] }] }
 
@@ -50,10 +149,67 @@ describe('parseModelListing of a gateway listing', () => {
     })
   })
 
-  it('keeps an entry usable when the gateway lists no endpoint type this build chats over', () => {
-    expect(only({ supported_endpoint_types: ['embeddings'] })?.capabilities).toEqual({
-      usable: false, reason: 'declares no api_capabilities.anthropic_messages',
+  it('reads optional capacities on endpoint-type gateway rows and ignores unreadable ones', () => {
+    expect(only({ supported_endpoint_types: ['openai'], context_window: 131_072, max_output_tokens: 32_768 })?.capabilities).toEqual({
+      usable: true, facts: { inputModalities: ['text'], contextWindow: 131_072, maxOutputTokens: 32_768 },
     })
+    expect(only({ supported_endpoint_types: ['openai'], context_window: 0, max_output_tokens: 'bad' })?.capabilities).toEqual({
+      usable: true, facts: { inputModalities: ['text'] },
+    })
+  })
+
+  it('filters non-chat gateway endpoints even when paired with an OpenAI-compatible route', () => {
+    for (const endpoints of [
+      ['embeddings'],
+      ['embeddings', 'openai'],
+      ['image-generation', 'openai'],
+      ['openai-video', 'openai'],
+      ['jina-rerank'],
+      ['midjourney-proxy', 'openai'],
+      ['suno-proxy'],
+    ]) {
+      expect(only({ supported_endpoint_types: endpoints })?.capabilities, JSON.stringify(endpoints)).toEqual({
+        usable: false, reason: 'is not a chat language model',
+      })
+    }
+  })
+
+  it('filters non-language model ids returned on OpenAI-compatible gateway endpoints', () => {
+    for (const id of [
+      'text-embedding-3-large', 'doubao-embedding-text-240715', 'bge-m3', 'bge-reranker-v2-m3',
+      'dall-e-3', 'gpt-image-1', 'flux-1.1-pro', 'midjourney', 'mj_imagine',
+      'doubao-seedream-3-0-t2i-250415', 'gemini-2.5-flash-image-preview',
+      'sora-2', 'veo-3', 'kling-v2', 'doubao-seedance-1-0-pro-250528', 'wan2.1-t2v-turbo',
+      'tts-1', 'whisper-1', 'gpt-4o-realtime-preview', 'cosyvoice-v2',
+      'suno-v4', 'omni-moderation-latest', 'deepseek-ocr', 'babbage-002',
+    ]) {
+      expect(parseModelListing({ data: [{ id, supported_endpoint_types: ['openai'] }] }).entries[0]?.capabilities, id).toEqual({
+        usable: false, reason: 'is not a chat language model',
+      })
+    }
+  })
+
+  it('retains language and multimodal chat models on chat gateway endpoints', () => {
+    for (const [id, endpoints] of [
+      ['deepseek-chat', ['openai']],
+      ['deepseek-r1', ['openai']],
+      ['gpt-4o', ['openai']],
+      ['gpt-5', ['openai', 'openai-response']],
+      ['claude-sonnet-4-5', ['anthropic', 'openai']],
+      ['gemini-2.5-pro', ['gemini', 'openai']],
+      ['doubao-seed-1-6-250615', ['openai']],
+      ['doubao-1-5-vision-pro-32k', ['openai']],
+      ['kimi-k2-thinking', ['openai']],
+      ['qwen3-coder-plus', ['openai']],
+      ['qwen2.5-vl-72b-instruct', ['openai']],
+      ['glm-4.5v', ['openai']],
+      ['minimax-m2', ['openai']],
+      ['grok-3', ['openai']],
+    ] as const) {
+      expect(parseModelListing({ data: [{ id, supported_endpoint_types: [...endpoints] }] }).entries[0]?.capabilities, id).toEqual({
+        usable: true, facts: { inputModalities: ['text'] },
+      })
+    }
   })
 
   it('is not a gateway listing when any entry declares its own capabilities', () => {

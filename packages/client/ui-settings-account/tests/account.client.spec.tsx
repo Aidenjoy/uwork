@@ -755,3 +755,16 @@ it('keeps notification DOM inside the launcher while the collapsed rail hides it
   view.rerender(await accountMenu(operations, snapshot, false, renderSlot))
   expect(screen.getByRole('status')).toBe(notice)
 })
+
+it.each(['signed-out', 'credential-stored'] as const)('omits the Feedback menu item when contactUs is absent (%s)', async (status) => {
+  const { contactUs: _contactUs, ...rest } = operationsOf({ status, attempt: null })
+  const { AccountMenu } = await import('../src/client/AccountMenu.tsx')
+  render(<AccountMenu renderSlot={() => null} {...({} as GlobalStandardProps)} {...rest} settingsOpen={false}
+    useAccount={selector => selector(rest.hooks.account.getSnapshot())}
+    useTheme={selector => selector(rest.hooks.theme.getSnapshot())} wide openOnboarding={() => {}} openSettings={() => {}}
+    t={key => key in zh ? zh[key as AccountKey] : key} />)
+  fireEvent.click(screen.getByRole('button', { name: zh.menu }))
+  expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual([
+    zh.settings, status === 'credential-stored' ? zh.signOut : zh.signIn,
+  ])
+})

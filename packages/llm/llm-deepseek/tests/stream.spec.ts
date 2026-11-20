@@ -131,6 +131,12 @@ describe('SSE framing and provider failures', () => {
     [400, { message: 'insufficient balance' }, 'QUOTA'],
     [403, { code: 'insufficient_user_quota', message: '用户额度不足, 剩余额度: ¥0.000000' }, INSUFFICIENT_QUOTA_CODE],
     [403, { type: 'new_api_error', message: '用户额度不足, 剩余额度: ¥0.000000' }, INSUFFICIENT_QUOTA_CODE],
+    [403, { type: 'new_api_error', message: '预扣费额度失败, 用户剩余额度: ¥0.01, 需要预扣费额度: ¥0.05' }, INSUFFICIENT_QUOTA_CODE],
+    [403, { type: 'new_api_error', message: '订阅额度不足或未配置订阅: subscription quota insufficient' }, INSUFFICIENT_QUOTA_CODE],
+    [403, { type: 'new_api_error', message: 'organization quota insufficient' }, INSUFFICIENT_QUOTA_CODE],
+    [403, { type: 'new_api_error', message: 'organization member quota limit exceeded: 子额度上限 ¥10.00，已用 ¥10.00，本次需预扣 ¥0.05' }, INSUFFICIENT_QUOTA_CODE],
+    [403, { type: 'new_api_error', message: 'insufficient token quota' }, INSUFFICIENT_QUOTA_CODE],
+    [403, { code: 'pre_consume_token_quota_failed', message: 'token quota pre-consume failed' }, INSUFFICIENT_QUOTA_CODE],
   ])('classifies status %s and error %j', (status, error, code) => {
     expect(providerError({ error }, status)).toMatchObject({ code })
   })

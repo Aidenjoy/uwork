@@ -1,4 +1,4 @@
-/** The account route serves its /models listing, gates models, and keeps discovery independent of the API-key route. */
+/** The account route serves its compact /v1/modelsinfo listing, gates models, and keeps discovery independent of the API-key route. */
 import { createServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -28,12 +28,12 @@ afterEach(async () => {
   vi.restoreAllMocks()
 })
 
-/** Loopback listing endpoint: `reply` answers GET /models; any other request fails the test through its status. */
+/** Loopback listing endpoint: `reply` answers GET /v1/modelsinfo?type=text; any other request fails the test through its status. */
 async function listing(reply: (request: IncomingMessage, response: ServerResponse) => void) {
   const requests: IncomingMessage[] = []
   const server = createServer((request, response) => {
     requests.push(request)
-    if (request.method === 'GET' && request.url === '/models') reply(request, response)
+    if (request.method === 'GET' && request.url === '/v1/modelsinfo?type=text') reply(request, response)
     else response.writeHead(500).end('unexpected request')
   })
   servers.push(server)
@@ -170,7 +170,7 @@ it('hides and refuses listed models this build cannot serve before any inference
   await expect(ctx.llm.prepareCall({ provider: 'deepseek-account', model: 'deepseek-v5-next' }))
     .rejects.toMatchObject({ code: 'CLIENT_UPGRADE_REQUIRED', message: expect.stringMatching(/requires DeepSeek Harness 99\.0\.0-alpha\.1 or later; current version is /) as string })
   await expect(ctx.llm.prepareCall({ provider: 'deepseek-account', model: 'unlisted-pass-through' })).resolves.toBeDefined()
-  expect(server.requests.map(request => request.url)).toEqual(['/models'])
+  expect(server.requests.map(request => request.url)).toEqual(['/v1/modelsinfo?type=text'])
   expect(diagnostic).toHaveBeenCalledExactlyOnceWith('[llm-deepseek-account]', expect.stringContaining('loaded 5 model(s), skipped 0 row(s)') as string)
   expect(warn).toHaveBeenCalledExactlyOnceWith('[llm-deepseek-account]', 'model "deepseek-v4-pro" declares no api_capabilities.anthropic_messages')
 })

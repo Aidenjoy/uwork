@@ -164,7 +164,10 @@ export function Welcome({ api }: { api: WelcomeApi }) {
         <button id="auth-loading" className="primary" type="button" hidden={failed} disabled aria-label={m.welcomeAuthExchanging}>
           <StateDot state="ongoing" size={16} className="welcome-loading" />
         </button>
-        <button id="auth-retry" className="primary" type="button" hidden={!failed} onClick={() => { void api.analytics?.('auth_page_click', { button_name: 'sign_in' }); void start() }}>{m.welcomeAuthRetry}</button>
+        <button id="auth-retry" className="primary" type="button" hidden={!failed} disabled={leaving}
+          onClick={() => { void api.analytics?.('auth_page_click', { button_name: 'sign_in' }); void start() }}>{m.welcomeAuthRetry}</button>
+        <button id="auth-sign-in-later" className="secondary" type="button" hidden={!failed} disabled={leaving}
+          onClick={() => { void later() }}>{m.welcomeSignInLater}</button>
         <button id="auth-cancel" className="secondary" type="button" hidden={failed}
           disabled={cancelling || phase === 'committing' || phase === 'succeeded' || (phase === 'initializing' && !attempt?.id)}
           onClick={() => { void cancel() }}>{m.welcomeAuthCancel}</button>

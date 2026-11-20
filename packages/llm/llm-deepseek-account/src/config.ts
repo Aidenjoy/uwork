@@ -4,7 +4,7 @@ import z from '@deepseek-ai/schemastery'
 import { isVolatile } from '@deepseek-ai/cosmokit'
 import type { LaunchEnvironmentSnapshot } from '@deepseek-ai/dsh-launch-environment'
 import {
-  catalogModelFields, deepSeekConfigFields, modelListingConfigFields, modelListingURL, resolveAdapterOptions, resolveListingTiming,
+  catalogModelFields, deepSeekConfigFields, gatewayModelListingURL, modelListingConfigFields, resolveAdapterOptions, resolveListingTiming,
 } from '@deepseek-ai/dsh-llm-deepseek'
 import type {
   Config as ProtocolConfig, ListingSettings, ModelListingConfig, ModelListingOptions, ModelOverride, Options as ProtocolOptions,
@@ -91,7 +91,7 @@ export function resolveAccountOptions(options: AccountOptions, environment?: Lau
   const protocol = resolveAdapterOptions(protocolOptions, environment)
   return {
     protocol,
-    catalog: { url: modelListingURL(protocol.baseURL), ...timing },
+    catalog: { url: gatewayModelListingURL(protocol.baseURL), ...timing },
     modelOverrides: Object.fromEntries(Object.entries(modelOverrides).map(([id, override]) => [id, resolveOverride(id, override)])),
   }
 }

@@ -42,8 +42,11 @@ describe('StateDot.module.css', () => {
     expect(css).toContain('stroke-dashoffset: -6')
   })
 
-  it('stops both animations and retains an intermediate arc for reduced motion', () => {
-    const reduced = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'))
+  it('stops both animations and retains an intermediate arc for reduced motion or forced colors', () => {
+    const start = css.indexOf('@media (prefers-reduced-motion: reduce)')
+    expect(start).toBeGreaterThanOrEqual(0)
+    const reduced = css.slice(start)
+    expect(reduced.slice(0, reduced.indexOf('{'))).toContain('(forced-colors: active)')
     expect(reduced).toContain('.spinnerMotion,')
     expect(reduced).toContain('.spinnerArc')
     expect(reduced).toContain('animation: none')

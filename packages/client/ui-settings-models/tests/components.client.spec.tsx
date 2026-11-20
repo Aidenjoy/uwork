@@ -2067,6 +2067,32 @@ describe('ModelsSection', () => {
     await screen.findByText('DeepSeek')
   })
 
+  it('opens the third-party provider add card once when requested on entry', async () => {
+    const { face } = scriptedFace()
+    const controller = new ModelsSettingsStore(ctxWith(face), settingsSchema, new SettingsDescribeMirror(ctxWith(face)))
+    await controller.load()
+    let pending = true
+    const consumeAddRequest = vi.fn(() => {
+      const next = pending
+      pending = false
+      return next
+    })
+    render(<ModelsSection
+      controller={controller}
+      useSnapshot={bindSnapshotSelector(controller.store)}
+      operations={operationsWith(face)}
+      schema={settingsSchema}
+      t={t}
+      consumeAddRequest={consumeAddRequest}
+      renderSlot={() => null}
+    />)
+    expect(consumeAddRequest).toHaveBeenCalled()
+    expect(screen.getByRole('tablist')).toBeTruthy()
+    expect(screen.getByRole('tab', { name: en.addCustom })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: en.cancel }))
+    expect(screen.queryByRole('tablist')).toBeNull()
+  })
+
   it('removes by unsetting the profile path, never by rebuilding the section', async () => {
     // The page only needs to name the profile path; rebuilding the section
     // would widen the write for no benefit.

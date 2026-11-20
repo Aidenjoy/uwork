@@ -12,7 +12,7 @@ import type { AccountClientMetadata } from '@deepseek-ai/dsh-deepseek-account'
 import { LocalCredentialProvider } from '@deepseek-ai/dsh-credentials-local'
 import { credentialKey, credentialRef } from '@deepseek-ai/dsh-credentials'
 import { DeepSeekAccount } from '../src/index.ts'
-import { DESKTOP_CALLBACK_PATH, isPrivateHttpHost, platformHeaders, platformOrigin, loginOrigin } from '../src/protocol.ts'
+import { DESKTOP_CALLBACK_PATH, desktopRedirectUri, isPrivateHttpHost, platformHeaders, platformOrigin, loginOrigin } from '../src/protocol.ts'
 
 const cleanups: Array<() => Promise<unknown>> = []
 afterEach(async () => {
@@ -68,6 +68,8 @@ async function fixture(
   let logoutHold = false
   let logoutCount = 0
   const logoutHeaders: Array<string | undefined> = []
+  let desktopRevokeCount = 0
+  const desktopRevokeHeaders: Array<string | undefined> = []
   let normalWallets: unknown = [{ currency: 'CNY', balance: '123.45', token_estimation: '0' },
     { currency: 'USD', balance: '6.78', token_estimation: '0' }]
   let bonusWallets: unknown = [{ currency: 'CNY', balance: '10.00' }]
@@ -84,7 +86,7 @@ async function fixture(
     authorization: string | undefined
   }> = []
   const handle = async (req: IncomingMessage, res: ServerResponse) => {
-    expect(req.headers.authorization).toBeUndefined()
+    if (req.url !== '/api/desktop-auth/revoke') expect(req.headers.authorization).toBeUndefined()
     receivedHeaders.push({ clientPlatform: req.headers['x-client-platform'] as string | undefined,
       bundleId: req.headers['x-client-bundle-id'] as string | undefined,
       version: req.headers['x-client-version'] as string | undefined,
@@ -92,6 +94,13 @@ async function fixture(
       timezoneOffset: req.headers['x-client-timezone-offset'] as string | undefined,
       path: req.url, cookie: req.headers.cookie, authorization: req.headers['x-dsh-auth-token'] as string | undefined })
     if (redirect) { res.writeHead(302, { location: `${origin}/redirect-target` }).end(); return }
+    if (req.url === '/api/desktop-auth/revoke') {
+      desktopRevokeCount++
+      desktopRevokeHeaders.push(req.headers.authorization)
+      if (logoutHold) await release.promise
+      res.writeHead(logoutFailed ? 500 : 204).end()
+      return
+    }
     if (req.url === '/auth-api/v0/users/logout') {
       logoutCount++
       logoutHeaders.push(req.headers['x-dsh-auth-token'] as string | undefined)
@@ -211,6 +220,7 @@ async function fixture(
   }
   return { cancellations, cancellationReceived, holdCancel: () => { holdCancel = true },
     ctx, account, home, origin, callbackOrigin, wait, receivedHeaders, logoutHeaders, logoutCount: () => logoutCount,
+    desktopRevokeHeaders, desktopRevokeCount: () => desktopRevokeCount,
     holdLogout: () => { logoutHold = true },
     failLogout: (failed: boolean) => { logoutFailed = failed }, detailRequests, detailsStarted,
     detailCode: (code: number) => { detailCode = code },
@@ -754,6 +764,29 @@ it('normalizes supported loopback callback origins', () => {
   expect(loginOrigin('http://127.0.0.1:8080')).toBe('http://127.0.0.1:8080')
   expect(loginOrigin('http://[::1]:8080/')).toBe('http://[::1]:8080')
   expect(loginOrigin('http://localhost:80')).toBe('http://localhost:80')
+  expect(desktopRedirectUri('http://localhost:8080')).toBe(`http://127.0.0.1:8080${DESKTOP_CALLBACK_PATH}`)
+  expect(desktopRedirectUri('http://localhost:80')).toBe(`http://127.0.0.1:80${DESKTOP_CALLBACK_PATH}`)
+  expect(desktopRedirectUri('http://127.0.0.1:51234')).toBe(`http://127.0.0.1:51234${DESKTOP_CALLBACK_PATH}`)
+  expect(desktopRedirectUri('http://[::1]:8080')).toBe(`http://[::1]:8080${DESKTOP_CALLBACK_PATH}`)
+})
+
+it('normalizes localhost callback origins to 127.0.0.1 in utoken authorize and token requests', async () => {
+  const f = await fixture()
+  const port = new URL(f.callbackOrigin).port
+  const localhostOrigin = `http://localhost:${port}`
+  await f.account.startSignIn(clientMetadata(), localhostOrigin, 'web')
+  const state = await f.wait('waiting-browser')
+  const authorizeUrl = new URL(state.attempt!.authorizeUrl!)
+  const expectedRedirectUri = `http://127.0.0.1:${port}${DESKTOP_CALLBACK_PATH}`
+  expect(authorizeUrl.searchParams.get('redirect_uri')).toBe(expectedRedirectUri)
+  const response = await fetch(
+    `${localhostOrigin}${DESKTOP_CALLBACK_PATH}?code=test&state=${authorizeUrl.searchParams.get('state')}`,
+    { redirect: 'manual' },
+  )
+  expect(response.status).toBe(200)
+  expect((await f.account.getState()).status).toBe('credential-stored')
+  const tokenParams = new URLSearchParams(f.tokenRequests().at(-1))
+  expect(tokenParams.get('redirect_uri')).toBe(expectedRedirectUri)
 })
 
 // The desktop flow never calls `auth_init`, so there is no `authorize_id` to validate, no remote
@@ -812,9 +845,11 @@ it('serves the sign-in snapshot when the deployment has no DeepSeek account APIs
   })
   expect(await f.account.getBalance(clientMetadata())).toEqual({ status: 'failed' })
   expect(f.detailRequests).toEqual([])
-  // A deployment without the account APIs has no remote revocation endpoint either.
+  // A gateway deployment skips DeepSeek's logout endpoint and revokes its own desktop session instead.
   await f.account.signOut(clientMetadata())
   expect(f.logoutCount()).toBe(0)
+  await expect.poll(f.desktopRevokeCount).toBe(1)
+  expect(f.desktopRevokeHeaders).toEqual([`Bearer ${'A'.repeat(43)}`])
   // The snapshot is bound to the origin that issued it and disappears with the grant.
   expect(await f.account.getProfile(clientMetadata())).toBeNull()
   expect(await f.ctx.credentials.readRecord(credentialKey('deepseek-account-platform', 'profile'))).toBeUndefined()
@@ -1644,19 +1679,54 @@ it('ignores an inference rejection while already signed out', async () => {
   expect(await f.account.getState()).not.toHaveProperty('signOutReason')
 })
 
-it('clears only the language key an inference request rejected', async () => {
+it('expires the account session when inference rejects the stored language key', async () => {
   const f = await fixture()
   await storeAccount(f)
   await f.ctx.credentials.modifyRecord(credentialKey('deepseek-account-platform', 'speech'), () => Promise.resolve({
     kind: 'grant', payload: { version: 1, key: 'sk-test-language-key', issuer: f.origin },
   }))
+  await f.ctx.credentials.modifyRecord(credentialKey('deepseek-account-platform', 'profile'), () => Promise.resolve({
+    kind: 'grant', payload: { version: 1, issuer: f.origin, user: { id: 1, username: 'alice', display_name: 'Alice', role: 1, group: 'default' } },
+  }))
+  const published: string[] = []
+  f.ctx.on('deepseek-account/signed-out', () => { published.push('signed-out') })
+  f.ctx.on('deepseek-account/session-expired', () => { published.push('session-expired') })
   expect(await f.account.resolveLanguageKey()).toBe('sk-test-language-key')
   await f.account.rejectToken('sk-test-language-key')
   expect(await f.account.resolveLanguageKey()).toBeUndefined()
-  // The access token still proves the login: the account stays signed in and can mint a fresh key.
+  expect(await f.account.getState()).toMatchObject({ status: 'signed-out' })
+  expect(await f.ctx.credentials.readRecord(credentialKey('deepseek-account-platform', 'default'))).toBeUndefined()
+  expect(await f.ctx.credentials.readRecord(credentialKey('deepseek-account-platform', 'speech'))).toBeUndefined()
+  expect(await f.ctx.credentials.readRecord(credentialKey('deepseek-account-platform', 'profile'))).toBeUndefined()
+  expect(published).toEqual(['session-expired', 'signed-out'])
+})
+
+it('retains a replacement login when inference rejects a previous language key', async () => {
+  const f = await fixture()
+  await storeAccount(f)
+  await f.ctx.credentials.modifyRecord(credentialKey('deepseek-account-platform', 'speech'), () => Promise.resolve({
+    kind: 'grant', payload: { version: 1, key: 'sk-current-language-key', issuer: f.origin },
+  }))
+  await f.account.rejectToken('sk-previous-language-key')
   expect(await f.account.getState()).toMatchObject({ status: 'credential-stored' })
-  expect(await f.ctx.credentials.readRecord(credentialKey('deepseek-account-platform', 'default')))
-    .toMatchObject({ kind: 'grant', payload: { token: 'test-platform-grant' } })
+  expect(await f.account.resolveLanguageKey()).toBe('sk-current-language-key')
+})
+
+it('fails desktop token exchange at requestTimeoutMs instead of waiting for attemptTimeoutMs', async () => {
+  const f = await fixture(undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, {
+    requestTimeoutMs: 60, attemptTimeoutMs: 60_000,
+  })
+  f.hold()
+  try {
+    await f.account.startSignIn(clientMetadata('en'), f.callbackOrigin, 'desktop')
+    await f.wait('waiting-browser')
+    const callback = fetch(f.callback(), { redirect: 'manual' })
+    const failed = await f.wait('failed')
+    expect(failed.attempt).toMatchObject({ phase: 'failed', errorCode: 'no-response' })
+    await callback
+  } finally {
+    f.release.resolve(undefined)
+  }
 })
 
 it('removes the language key together with an expired grant', async () => {

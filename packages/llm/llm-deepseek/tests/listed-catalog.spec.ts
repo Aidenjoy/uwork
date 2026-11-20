@@ -208,6 +208,19 @@ describe('with a gateway listing', () => {
     expect(catalog.refusals.get('embed-3')).toEqual({ kind: 'unsupported' })
   })
 
+  it('offers only chat language models from a mixed gateway listing', () => {
+    const catalog = resolveGateway([
+      gatewayRow('kimi-k3', 'openai'),
+      gatewayRow('dall-e-3', 'image-generation', 'openai'),
+      gatewayRow('text-embedding-3-large', 'openai'),
+      gatewayRow('doubao-seedance-1-0-pro', 'openai'),
+    ])
+    expect(catalog.offered.map(model => model.id)).toEqual(['kimi-k3'])
+    expect(catalog.refusals.get('dall-e-3')).toEqual({ kind: 'unsupported' })
+    expect(catalog.refusals.get('text-embedding-3-large')).toEqual({ kind: 'unsupported' })
+    expect(catalog.refusals.get('doubao-seedance-1-0-pro')).toEqual({ kind: 'unsupported' })
+  })
+
   it('keeps an unknown listed id unsupported without the gateway flag', () => {
     const catalog = resolve([gatewayRow('kimi-k3', 'openai')])
     expect(catalog.offered).toEqual([])

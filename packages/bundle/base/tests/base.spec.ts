@@ -53,6 +53,8 @@ describe('dsh-base bundle', () => {
     })
     expect(rows.find(row => row.id === 'tool-web')?.config).toMatchObject({ fetch: true, search: false })
     expect(rows.find(row => row.id === 'llm-deepseek')).toMatchObject({ disabled: true })
+    expect(rows.find(row => row.id === 'session-log-deepseek')?.disabled).toBe(true)
+    expect(rows.find(row => row.id === 'plugin-package-inventory-deepseek')?.disabled).toBe(true)
     expect(rows.find(row => row.id === 'llm-deepseek-account')?.disabled).toBeUndefined()
     expect(manifest.dependencies).not.toHaveProperty('@deepseek-ai/dsh-subagent-codex')
     expect(manifest.dependencies).not.toHaveProperty('@deepseek-ai/dsh-subagent-claude-code')

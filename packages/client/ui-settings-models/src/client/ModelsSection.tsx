@@ -21,7 +21,7 @@
  * post-apply reload.
  */
 
-import { useId, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Button, IconPlusOutlineRegular, Modal, SegmentedControl } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
@@ -51,6 +51,8 @@ export interface ModelsSectionInjected {
   schema: SettingsSchemaOperations
   /** Section copy. */
   t: (key: keyof typeof en) => string
+  /** Consume an explicit request to open the third-party provider add flow once on entry. */
+  consumeAddRequest?: (() => boolean) | undefined
 }
 
 /**
@@ -236,15 +238,27 @@ export function providerCopy(template: string, target: ProviderIdentity): string
  * @returns the section, or null while the shell has not injected yet.
  */
 export function ModelsSection(props: ModelsSectionProps): ReactNode {
-  const { controller, useSnapshot, operations, schema, t, renderSlot } = props
+  const { controller, useSnapshot, operations, schema, t, renderSlot, consumeAddRequest } = props
   if (
     controller === undefined || useSnapshot === undefined || operations === undefined
     || schema === undefined || t === undefined
   ) return null
-  return <Loaded injected={{ controller, useSnapshot, operations, schema, t }} renderSlot={renderSlot} />
+  return (
+    <Loaded
+      injected={{ controller, useSnapshot, operations, schema, t }}
+      consumeAddRequest={consumeAddRequest}
+      renderSlot={renderSlot}
+    />
+  )
 }
 
-function Loaded({ injected, renderSlot }: { injected: ModelsSectionFace; renderSlot: ModelsRenderSlot }): ReactNode {
+function Loaded(
+  { injected, renderSlot, consumeAddRequest }: {
+    injected: ModelsSectionFace
+    renderSlot: ModelsRenderSlot
+    consumeAddRequest?: (() => boolean) | undefined
+  },
+): ReactNode {
   const { controller, operations, schema, t } = injected
   const snapshot = injected.useSnapshot(value => value)
   const state = { ...snapshot, rows: snapshot.rows.map(row => row.entry.provider === 'deepseek-account'
@@ -328,6 +342,25 @@ function Loaded({ injected, renderSlot }: { injected: ModelsSectionFace; renderS
       })
       .finally(() => { setDeleting(false) })
   }
+
+  useEffect(() => {
+    if (state.status !== 'ready' || addOpen || consumeAddRequest === undefined) return
+    if (!consumeAddRequest()) return
+    const addableRows = state.rows.flatMap((row) => {
+      const namespace = state.namespaces.get(row.entry.settingsNs)
+      return namespace === undefined || row.configured ? [] : [{ row, namespace }]
+    })
+    const catalogEnabled = addableRows.length > 0
+    const customEnabled = protocolChoices(state.namespaces.get('llm-pi-ai'), schema).length > 0
+    if (!state.writable || (!catalogEnabled && !customEnabled)) return
+    const first = addableRows[0]
+    const initial: AddMode = catalogEnabled ? 'catalog' : 'custom'
+    setSavedTarget(undefined)
+    setEditing(first === undefined ? undefined : targetOf(first.row))
+    setAddMode(initial)
+    setVisited(new Set([initial]))
+    setAddOpen(true)
+  }, [addOpen, consumeAddRequest, schema, state.namespaces, state.rows, state.status, state.writable])
 
   if (state.status === 'idle') void controller.load()
   if (state.status === 'error') {

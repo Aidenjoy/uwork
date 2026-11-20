@@ -4,10 +4,11 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-settings'
 import { type ContactConfig, ContactConfigFields, CONTACT_CONFIG_GLOBAL } from './contact-config.ts'
 import { type PlatformPagesConfig, PlatformPagesFields, PLATFORM_PAGES_GLOBAL } from './platform-pages-config.ts'
+import { type OnboardingConfig, OnboardingFields, ONBOARDING_CONFIG_GLOBAL } from './onboarding-config.ts'
 import z from '@deepseek-ai/schemastery'
 import { OnboardingSettingsFields, type OnboardingStep, type OnboardingPurpose, type OnboardingProcess } from './onboarding-settings.ts'
 /** Public contact options and live device-local onboarding progress. */
-export interface Config extends ContactConfig, PlatformPagesConfig {
+export interface Config extends ContactConfig, PlatformPagesConfig, OnboardingConfig {
   /** Onboarding progress format version. */
   version: Volatile<1>
   /** Last accepted onboarding page. */
@@ -29,6 +30,7 @@ export const Config = z.object({
   contactFormUrl: ContactConfigFields.contactFormUrl,
   contactSource: ContactConfigFields.contactSource,
   embeddedPlatformPages: PlatformPagesFields.embeddedPlatformPages,
+  desktopOnboarding: OnboardingFields.desktopOnboarding,
   version: OnboardingSettingsFields.version.volatile(),
   step: OnboardingSettingsFields.step.volatile(),
   purpose: OnboardingSettingsFields.purpose.volatile(),
@@ -54,5 +56,8 @@ export function apply(ctx: Context, config: Config): void {
     table.push({ kind: 'global', name: PLATFORM_PAGES_GLOBAL, value: {
       embeddedPlatformPages: config.embeddedPlatformPages,
     } satisfies PlatformPagesConfig })
+    table.push({ kind: 'global', name: ONBOARDING_CONFIG_GLOBAL, value: {
+      desktopOnboarding: config.desktopOnboarding,
+    } satisfies OnboardingConfig })
   })
 }
