@@ -84,6 +84,10 @@ export const VIEWER_ENDPOINT_CLASSES = {
   // the core share roles grant.
   'account/cancelSignIn': 'owner-only', // owner account and sign-in; the served page never reads it
   'account/getBalance': 'owner-only', // owner account and sign-in; the served page never reads it
+  'account/getConversationMessages': 'owner-only', // owner account and sign-in; the served page never reads it
+  'account/getUsageLogs': 'owner-only', // owner account and sign-in; the served page never reads it
+  'account/listConversations': 'owner-only', // owner account and sign-in; the served page never reads it
+  'account/patchConversation': 'owner-only', // owner account and sign-in; the served page never reads it
   'account/getProfile': 'owner-only', // owner account and sign-in; the served page never reads it
   'account/getState': 'owner-only', // owner account and sign-in; the served page never reads it
   'account/getNotificationContent': 'owner-only', // owner account and sign-in; the served page never reads it

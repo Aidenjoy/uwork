@@ -1,5 +1,8 @@
 import { expect, it, vi } from 'vitest'
-import { exchangeDesktopToken, logoutAccount, requestAccount, requestNotificationEvent, requestPlatform, requestNotifications, revokeDesktopSession } from '../src/protocol.ts'
+import {
+  exchangeDesktopToken, logoutAccount, requestAccount, requestDesktopBalance,
+  requestNotificationEvent, requestPlatform, requestNotifications, revokeDesktopSession,
+} from '../src/protocol.ts'
 import type { AccountNotificationId } from '@deepseek-ai/dsh-deepseek-account/types'
 import { readAccountDetail } from '../src/details.ts'
 import { readNotifications } from '../src/notifications.ts'
@@ -318,6 +321,28 @@ it('handles desktop session revocation outcomes without leaking the bearer token
     expect(logged).toContain('500')
     expect(logged).not.toContain(secretToken)
     expect(logged).not.toContain('private-upstream-error')
+  } finally {
+    fetcher.mockRestore()
+    output.mockRestore()
+  }
+})
+
+it('reports desktop balance HTTP failures without leaking the bearer token or body', async () => {
+  const output = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+  const secretToken = 'secret-desktop-balance-token'
+  const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+    new Response('private-balance-upstream-error', { status: 500 }),
+  )
+  try {
+    await expect(
+      requestDesktopBalance('https://token.example.test', secretToken, new AbortController().signal, {}),
+    ).rejects.toThrow('account: network')
+    expect(output).toHaveBeenCalledOnce()
+    const logged = JSON.stringify(output.mock.calls)
+    expect(logged).toContain('/api/desktop-auth/balance')
+    expect(logged).toContain('500')
+    expect(logged).not.toContain(secretToken)
+    expect(logged).not.toContain('private-balance-upstream-error')
   } finally {
     fetcher.mockRestore()
     output.mockRestore()

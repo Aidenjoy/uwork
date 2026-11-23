@@ -1,6 +1,9 @@
 /** Validated platform HTTP messages and restricted browser destinations. */
 import { z } from 'zod'
-import type { AccountNotificationEvent, AccountNotificationId, AccountProfile, AccountUserId, SignInErrorCode } from './types.ts'
+import type {
+  AccountConversationMessagesQuery, AccountConversationPatchInput, AccountConversationsQuery,
+  AccountNotificationEvent, AccountNotificationId, AccountProfile, AccountUsageLogsQuery, AccountUserId, SignInErrorCode,
+} from './types.ts'
 
 /** Protocol errors expose a stable code, never a response body or authorization URL. */
 export class PlatformAuthError extends Error {
@@ -11,6 +14,11 @@ export class PlatformAuthError extends Error {
 /** An authenticated Platform request was rejected with HTTP 401 or code 40003. */
 export class AccountUnauthorizedError extends PlatformAuthError {
   constructor() { super('expired') }
+}
+
+/** A conversation patch was rejected with HTTP 409 (stale revision or mutation collision). */
+export class DesktopConflictError extends PlatformAuthError {
+  constructor() { super('protocol') }
 }
 
 /**
@@ -206,8 +214,138 @@ export function exchangeDesktopToken(origin: string, code: string, redirectUri: 
   }, signal)
 }
 
+/**
+ * Fetch wallet balance and active subscriptions from utoken's desktop balance endpoint.
+ * @param origin - configured account API origin.
+ * @param token - stored desktop access token (`Bearer`).
+ * @param signal - credential lifetime and request timeout.
+ * @param headers - validated deployment headers for this origin.
+ * @returns parsed JSON payload, validated by the caller.
+ */
+export function requestDesktopBalance(origin: string, token: string,
+  signal: AbortSignal, headers: Record<string, string>): Promise<unknown> {
+  return desktopRequest(`${origin}/api/desktop-auth/balance`, {
+    method: 'GET',
+    headers: { ...headers, authorization: `Bearer ${token}` },
+  }, signal, 65_536)
+}
+
+/**
+ * Fetch paginated model usage logs from utoken's desktop usage logs endpoint.
+ * @param origin - configured account API origin.
+ * @param token - stored desktop access token (`Bearer`).
+ * @param query - pagination and filter parameters; offset is clamped to `<= 9999`.
+ * @param signal - credential lifetime and request timeout.
+ * @param headers - validated deployment headers for this origin.
+ * @returns parsed JSON payload, validated by the caller.
+ */
+export function requestDesktopUsageLogs(origin: string, token: string, query: AccountUsageLogsQuery,
+  signal: AbortSignal, headers: Record<string, string>): Promise<unknown> {
+  const url = new URL('/api/desktop/usage-logs', origin)
+  const rawSize = query.pageSize
+  const pageSize = typeof rawSize === 'number' && Number.isInteger(rawSize) ? Math.min(100, Math.max(1, rawSize)) : 20
+  const maxPage = Math.floor(9_999 / pageSize) + 1
+  const rawPage = query.page
+  const page = typeof rawPage === 'number' && Number.isInteger(rawPage) ? Math.min(maxPage, Math.max(1, rawPage)) : 1
+  url.searchParams.set('p', String(page))
+  url.searchParams.set('page_size', String(pageSize))
+  if (typeof query.startTimestamp === 'number' && Number.isInteger(query.startTimestamp) && query.startTimestamp > 0) {
+    url.searchParams.set('start_timestamp', String(query.startTimestamp))
+  }
+  if (typeof query.endTimestamp === 'number' && Number.isInteger(query.endTimestamp) && query.endTimestamp > 0) {
+    url.searchParams.set('end_timestamp', String(query.endTimestamp))
+  }
+  if (typeof query.modelName === 'string' && query.modelName.length > 0 && Buffer.byteLength(query.modelName, 'utf8') <= 256) {
+    url.searchParams.set('model_name', query.modelName)
+  }
+  return desktopRequest(url.href, {
+    method: 'GET',
+    headers: { ...headers, authorization: `Bearer ${token}` },
+  }, signal, 524_288)
+}
+
+/**
+ * Fetch paginated cloud conversations from utoken (`GET /api/conversations`).
+ * @param origin - configured account API origin.
+ * @param token - stored desktop access token (`Bearer`).
+ * @param query - offset and limit parameters.
+ * @param signal - credential lifetime and request timeout.
+ * @param headers - validated deployment headers for this origin.
+ * @returns parsed JSON payload, validated by the caller.
+ */
+export function requestDesktopConversations(origin: string, token: string, query: AccountConversationsQuery,
+  signal: AbortSignal, headers: Record<string, string>): Promise<unknown> {
+  const url = new URL('/api/conversations', origin)
+  const rawLimit = query.limit
+  const limit = typeof rawLimit === 'number' && Number.isInteger(rawLimit) ? Math.min(100, Math.max(1, rawLimit)) : 30
+  const rawOffset = query.offset
+  const offset = typeof rawOffset === 'number' && Number.isInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0
+  url.searchParams.set('offset', String(offset))
+  url.searchParams.set('limit', String(limit))
+  return desktopRequest(url.href, {
+    method: 'GET',
+    headers: { ...headers, authorization: `Bearer ${token}` },
+  }, signal, 524_288)
+}
+
+/**
+ * Fetch paginated structured messages for one cloud conversation (`GET /api/conversations/{id}/messages`).
+ * @param origin - configured account API origin.
+ * @param token - stored desktop access token (`Bearer`).
+ * @param id - conversation identifier (1..64 chars).
+ * @param query - optional cursor (`before`, `revision`) and `limit`.
+ * @param signal - credential lifetime and request timeout.
+ * @param headers - validated deployment headers for this origin.
+ * @returns parsed JSON payload, validated by the caller.
+ */
+export function requestDesktopConversationMessages(origin: string, token: string, id: string,
+  query: AccountConversationMessagesQuery, signal: AbortSignal, headers: Record<string, string>): Promise<unknown> {
+  if (id.length === 0 || id.length > 64) throw new PlatformAuthError('protocol')
+  const url = new URL(`/api/conversations/${encodeURIComponent(id)}/messages`, origin)
+  const rawLimit = query.limit
+  const limit = typeof rawLimit === 'number' && Number.isInteger(rawLimit) ? Math.min(100, Math.max(1, rawLimit)) : 50
+  url.searchParams.set('limit', String(limit))
+  if (typeof query.before === 'number' && Number.isInteger(query.before) && query.before > 0) {
+    url.searchParams.set('before', String(query.before))
+  }
+  if (typeof query.revision === 'number' && Number.isInteger(query.revision) && query.revision >= 0) {
+    url.searchParams.set('revision', String(query.revision))
+  }
+  return desktopRequest(url.href, {
+    method: 'GET',
+    headers: { ...headers, authorization: `Bearer ${token}` },
+  }, signal, 1_048_576)
+}
+
+/**
+ * Apply one idempotent revisioned patch to a cloud conversation (`PATCH /api/conversations/{id}`).
+ * @param origin - configured account API origin.
+ * @param token - stored desktop access token (`Bearer`).
+ * @param id - conversation identifier (1..64 chars).
+ * @param input - revision, mutation_id, title, messages, and deleted_ids.
+ * @param signal - credential lifetime and request timeout.
+ * @param headers - validated deployment headers for this origin.
+ * @returns parsed JSON payload, validated by the caller.
+ */
+export function patchDesktopConversation(origin: string, token: string, id: string,
+  input: AccountConversationPatchInput, signal: AbortSignal, headers: Record<string, string>): Promise<unknown> {
+  if (id.length === 0 || id.length > 64) throw new PlatformAuthError('protocol')
+  const url = new URL(`/api/conversations/${encodeURIComponent(id)}`, origin)
+  return desktopRequest(url.href, {
+    method: 'PATCH',
+    headers: { ...headers, authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      revision: input.revision,
+      mutation_id: input.mutationId,
+      title: input.title,
+      messages: input.messages,
+      deleted_ids: input.deletedIds,
+    }),
+  }, signal, 65_536)
+}
+
 /** Read and bound one utoken response that is plain JSON, not the platform envelope. */
-async function desktopRequest(url: string, init: RequestInit, signal: AbortSignal): Promise<unknown> {
+async function desktopRequest(url: string, init: RequestInit, signal: AbortSignal, maxBytes = 4_096): Promise<unknown> {
   const path = new URL(url).pathname
   let response: Response
   try {
@@ -219,6 +357,7 @@ async function desktopRequest(url: string, init: RequestInit, signal: AbortSigna
   if (!response.ok || response.body === null) {
     if (!callerCancelled(signal)) console.error('[deepseek-account] desktop request failed', { path, status: response.status, errorCode: 'network' })
     await response.body?.cancel()
+    if (response.status === 409) throw new DesktopConflictError()
     throw new PlatformAuthError('network')
   }
   const reader = response.body.getReader()
@@ -230,7 +369,7 @@ async function desktopRequest(url: string, init: RequestInit, signal: AbortSigna
       const next = await reader.read()
       if (next.done) break
       size += next.value.byteLength
-      if (size > 4_096) {
+      if (size > maxBytes) {
         stage = 'body-limit'
         throw new PlatformAuthError('protocol')
       }

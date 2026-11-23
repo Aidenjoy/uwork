@@ -10,10 +10,10 @@ import Schema from '@deepseek-ai/schemastery'
 import { z } from 'zod'
 import { installAccountTaskCancellation, isRunningAccountTask } from './account-tasks.ts'
 import { mergePlatformCookies, platformClientHeaders, platformWireLocale } from './client-metadata.ts'
-import { type AccountNotification, type AccountNotificationBatch, type AccountNotificationEvent, type AccountNotificationId, type AccountClientMetadata, type AccountDetails, type AccountUserId, type AccountView, type AccountUpdate, type PlatformSession, type SignInAttemptId, type SignInAttemptView } from './types.ts'
+import { type AccountConversationMessagesQuery, type AccountConversationMessagesResult, type AccountConversationPatchInput, type AccountConversationPatchResult, type AccountConversationsQuery, type AccountConversationsResult, type AccountNotification, type AccountNotificationBatch, type AccountNotificationEvent, type AccountNotificationId, type AccountClientMetadata, type AccountDetails, type AccountUsageLogsQuery, type AccountUsageLogsResult, type AccountUserId, type AccountView, type AccountUpdate, type PlatformSession, type SignInAttemptId, type SignInAttemptView } from './types.ts'
 import { credentialKey } from '@deepseek-ai/dsh-credentials'
 import type { AuthorizationSession } from '@deepseek-ai/dsh-authorization'
-import { readAccountDetail } from './details.ts'
+import { readAccountDetail, readDesktopBalance, readDesktopConversationMessages, readDesktopConversations, readDesktopUsageLogs, writeDesktopConversation } from './details.ts'
 import { readNotificationContent, readNotifications, sendNotificationEvent } from './notifications.ts'
 import { revokeAccount, type LogoutRetryPolicy } from './logout.ts'
 import { AccountUnauthorizedError, PlatformAuthError, platformHeaders, platformOrigin, loginOrigin, desktopAuthorizeUrl, desktopRedirectUri, exchangeDesktopToken, desktopToken, desktopLanguageKey, desktopProfile, desktopUser, DESKTOP_CALLBACK_PATH } from './protocol.ts'
@@ -65,8 +65,8 @@ export interface Config {
   /** Allow HTTP only on loopback for the development Mock. */
   allowLoopbackHttp?: boolean
   /** Whether platformOrigin serves the DeepSeek profile/balance endpoints (/auth-api/v0/users/current,
-   * /api/v0/users/get_user_summary). Gate these reads off for gateway deployments such as utoken that
-   * only implement desktop login/inference; those paths do not exist there and every call fails. */
+   * /api/v0/users/get_user_summary). When false, gateway deployments such as utoken serve profile from the
+   * sign-in snapshot and balance from /api/desktop-auth/balance instead. */
   platformAccountApis?: boolean
   /** Host-only headers for Platform and notification APIs; account authorization cannot be overridden. */
   requestHeaders?: Record<string, string>
@@ -306,9 +306,82 @@ export class DeepSeekAccount extends TypertRemoteService {
    */
   @Remote
   getBalance(client: AccountClientMetadata): Promise<AccountDetails['balance'] | null> {
-    // Gateway deployments (e.g. utoken) do not serve the DeepSeek-only account APIs.
-    if (!this.platformAccountApis) return Promise.resolve({ status: 'failed' })
+    if (!this.platformAccountApis) return this.getDesktopBalance(this.detailHeaders(client))
     return this.getDetail('balance', this.detailHeaders(client))
+  }
+
+  /**
+   * Query paginated model usage logs from utoken's desktop endpoint without expiring the session on 401.
+   * @param client - identity of the requesting UI for this call.
+   * @param query - optional pagination and filter parameters.
+   * @returns usage logs page outcome, or null when using Platform account APIs or signed out.
+   */
+  @Remote
+  async getUsageLogs(client: AccountClientMetadata,
+    query?: AccountUsageLogsQuery): Promise<AccountUsageLogsResult | null> {
+    if (this.platformAccountApis) return null
+    const lifetime = this.detailsLifetime
+    const stored = await this.readCurrentGrant(lifetime)
+    if (stored === null || lifetime.signal.aborted) return null
+    const result = await readDesktopUsageLogs(this.origin, stored.token, query ?? {},
+      AbortSignal.any([lifetime.signal, AbortSignal.timeout(this.balanceTimeout)]), this.detailHeaders(client))
+    return this.detailsLifetime !== lifetime ? null : result
+  }
+
+  /**
+   * List utoken cloud conversations without expiring the session on HTTP 401.
+   * @param client - identity of the requesting UI for this call.
+   * @param query - optional offset and limit parameters.
+   * @returns conversation list outcome, or null when using Platform account APIs or signed out.
+   */
+  @Remote
+  async listConversations(client: AccountClientMetadata,
+    query?: AccountConversationsQuery): Promise<AccountConversationsResult | null> {
+    if (this.platformAccountApis) return null
+    const lifetime = this.detailsLifetime
+    const stored = await this.readCurrentGrant(lifetime)
+    if (stored === null || lifetime.signal.aborted) return null
+    const result = await readDesktopConversations(this.origin, stored.token, query ?? {},
+      AbortSignal.any([lifetime.signal, AbortSignal.timeout(this.balanceTimeout)]), this.detailHeaders(client))
+    return this.detailsLifetime !== lifetime ? null : result
+  }
+
+  /**
+   * Read paginated structured messages for one utoken cloud conversation without expiring the session on HTTP 401.
+   * @param client - identity of the requesting UI for this call.
+   * @param id - conversation identifier.
+   * @param query - optional cursor (`before`, `revision`) and `limit` parameters.
+   * @returns conversation messages outcome, or null when using Platform account APIs or signed out.
+   */
+  @Remote
+  async getConversationMessages(client: AccountClientMetadata, id: string,
+    query?: AccountConversationMessagesQuery): Promise<AccountConversationMessagesResult | null> {
+    if (this.platformAccountApis) return null
+    const lifetime = this.detailsLifetime
+    const stored = await this.readCurrentGrant(lifetime)
+    if (stored === null || lifetime.signal.aborted) return null
+    const result = await readDesktopConversationMessages(this.origin, stored.token, id, query ?? {},
+      AbortSignal.any([lifetime.signal, AbortSignal.timeout(this.balanceTimeout)]), this.detailHeaders(client))
+    return this.detailsLifetime !== lifetime ? null : result
+  }
+
+  /**
+   * Apply one idempotent revisioned patch to a utoken cloud conversation without expiring the session on HTTP 401.
+   * @param client - identity of the requesting UI for this call.
+   * @param id - conversation identifier.
+   * @param input - revision, mutation_id, title, messages, and deleted_ids.
+   * @returns updated conversation metadata, conflict on HTTP 409, or null when unsupported or signed out.
+   */
+  @Remote
+  async patchConversation(client: AccountClientMetadata, id: string,
+    input: AccountConversationPatchInput): Promise<AccountConversationPatchResult | null> {
+    if (this.platformAccountApis) return null
+    const lifetime = this.detailsLifetime
+    const stored = await this.readCurrentGrant(lifetime)
+    if (stored === null || lifetime.signal.aborted) return null
+    const result = await writeDesktopConversation(this.origin, stored.token, id, input,
+      AbortSignal.any([lifetime.signal, AbortSignal.timeout(this.balanceTimeout)]), this.detailHeaders(client))
+    return this.detailsLifetime !== lifetime ? null : result
   }
 
   /**
@@ -449,6 +522,15 @@ export class DeepSeekAccount extends TypertRemoteService {
       if (this.detailsLifetime === lifetime) await this.expireCredential(stored.token, lifetime)
       return null
     }
+  }
+
+  private async getDesktopBalance(headers: Record<string, string>): Promise<AccountDetails['balance'] | null> {
+    const lifetime = this.detailsLifetime
+    const stored = await this.readCurrentGrant(lifetime)
+    if (stored === null || lifetime.signal.aborted) return null
+    const details = await readDesktopBalance(this.origin, stored.token,
+      AbortSignal.any([lifetime.signal, AbortSignal.timeout(this.balanceTimeout)]), headers)
+    return this.detailsLifetime !== lifetime ? null : details
   }
 
   /** Deployment account headers plus the client identity headers derived from one call's metadata. */

@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, act, within } from '@testing-librar
 import { useMemo, useSyncExternalStore } from 'react'
 import { afterEach, expect, it, onTestFinished, vi } from 'vitest'
 import type { GlobalStandardProps } from '@deepseek-ai/dsh-client-ui-slots'
-import type { AccountDetails, AccountView, SignInAttemptId } from '@deepseek-ai/dsh-deepseek-account/types'
+import type { AccountDetails, AccountUserId, AccountView, SignInAttemptId } from '@deepseek-ai/dsh-deepseek-account/types'
 import type { ThemeSnapshot } from '@deepseek-ai/dsh-client-ui-theme/client'
 import type { PlatformBridge } from '../src/client/PlatformOverlay.tsx'
 import { createPlatformPages, type PlatformPages } from '../src/client/platform-pages.ts'
@@ -15,6 +15,7 @@ import type {} from '../src/client/index.ts'
 import { en, zh, type AccountKey } from '../src/client/locales.ts'
 import css from '../src/client/AccountSection.module.css'
 import type { AccountAvatarSnapshot } from '../src/client/account-avatar.ts'
+import { hasOnboardingCredit } from '../src/client/onboarding-balance.ts'
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
@@ -767,4 +768,214 @@ it.each(['signed-out', 'credential-stored'] as const)('omits the Feedback menu i
   expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual([
     zh.settings, status === 'credential-stored' ? zh.signOut : zh.signIn,
   ])
+})
+
+it.each([en, zh])('renders WorkBuddy-style profile, wallet balance, and subscription points in signed-in menu', async (copy) => {
+  const details: Partial<AccountDetails> = {
+    profile: { status: 'ready', value: { id: '329' as AccountUserId, name: 'Barua Sunwing', contact: null, username: 'barua' } },
+    balance: {
+      status: 'ready',
+      value: [{ currency: 'CNY', balance: '30' }],
+      bonusWallets: [],
+      subscriptions: [{
+        subscriptionId: 8, planId: 1, planTitle: '体验版',
+        totalPoints: '40', usedPoints: '1', remainingPoints: '39', unlimited: false, endTime: 1_798_000_000,
+      }],
+    },
+  }
+  const operations = operationsOf({ status: 'credential-stored', attempt: null }, details)
+  const { AccountMenu } = await import('../src/client/AccountMenu.tsx')
+  render(<AccountMenu renderSlot={() => null} {...({} as GlobalStandardProps)} {...operations} settingsOpen={false}
+    useAccount={selector => selector(operations.hooks.account.getSnapshot())}
+    useTheme={selector => selector(operations.hooks.theme.getSnapshot())} wide openOnboarding={() => {}} openSettings={() => {}}
+    t={key => key in copy ? copy[key as AccountKey] : key} />)
+  fireEvent.click(screen.getByRole('button', { name: copy.menu }))
+  const menu = screen.getByRole('menu')
+  expect(within(menu).getByText('Barua Sunwing')).toBeTruthy()
+  expect(within(menu).getByText('barua')).toBeTruthy()
+  expect(within(menu).getByText(copy.walletBalance)).toBeTruthy()
+  expect(within(menu).getByText('¥30.00')).toBeTruthy()
+  expect(within(menu).getByText(copy.subscriptionPoints)).toBeTruthy()
+  expect(within(menu).getByText('39')).toBeTruthy()
+  expect(within(menu).getByText('体验版 · 39/40')).toBeTruthy()
+  expect(within(menu).getByRole('link', { name: copy.topUp }).getAttribute('href')).toBe('http://localhost:8081/top_up')
+  expect(within(menu).getByRole('link', { name: copy.usage }).getAttribute('href')).toBe('http://localhost:8081/usage')
+})
+
+it('shows empty, unlimited, and failed balance states in the signed-in popover header', async () => {
+  const { AccountMenuHeader } = await import('../src/client/AccountMenuHeader.tsx')
+  const links = { usageUrl: 'https://token.test/usage-logs', topUpUrl: 'https://token.test/wallet' }
+  const common = { avatar: undefined, avatarFailed: vi.fn(), links, refreshing: false, onRefresh: vi.fn(), onCloseMenu: vi.fn() }
+  const view = render(<AccountMenuHeader {...common}
+    details={{ balance: { status: 'ready', value: [{ currency: 'CNY', balance: '1894.37' }], bonusWallets: [], subscriptions: [] } }}
+    t={key => zh[key]} />)
+  expect(screen.getByText('¥1,894.37')).toBeTruthy()
+  expect(screen.getByText(zh.noSubscription)).toBeTruthy()
+  view.rerender(<AccountMenuHeader {...common}
+    details={{
+      balance: {
+        status: 'ready', value: [{ currency: 'CNY', balance: '0' }], bonusWallets: [],
+        subscriptions: [{
+          subscriptionId: 1, planId: 2, totalPoints: '0', usedPoints: '0', remainingPoints: '0', unlimited: true, endTime: 1_798_000_000,
+        }],
+      },
+    }}
+    t={key => zh[key]} />)
+  expect(screen.getByText(zh.unlimited)).toBeTruthy()
+  view.rerender(<AccountMenuHeader {...common} details={{ balance: { status: 'failed' } }} t={key => zh[key]} />)
+  expect(screen.getByRole('link', { name: zh.balanceUnavailable }).getAttribute('href')).toBe('https://token.test/usage-logs')
+})
+
+it('refreshes on signed-in popover open and manual header click without refreshing signed-out menus', async () => {
+  const signedOut = operationsOf({ status: 'signed-out', attempt: null })
+  const { AccountMenu } = await import('../src/client/AccountMenu.tsx')
+  const view = render(<AccountMenu renderSlot={() => null} {...({} as GlobalStandardProps)} {...signedOut} settingsOpen={false}
+    useAccount={selector => selector(signedOut.hooks.account.getSnapshot())}
+    useTheme={selector => selector(signedOut.hooks.theme.getSnapshot())} wide openOnboarding={() => {}} openSettings={() => {}}
+    t={key => key in en ? en[key as AccountKey] : key} />)
+  fireEvent.click(screen.getByRole('button', { name: en.menu }))
+  expect(signedOut.refreshAccount).not.toHaveBeenCalled()
+  cleanup()
+
+  const signedIn = operationsOf({ status: 'credential-stored', attempt: null })
+  view.unmount()
+  render(<AccountMenu renderSlot={() => null} {...({} as GlobalStandardProps)} {...signedIn} settingsOpen={false}
+    useAccount={selector => selector(signedIn.hooks.account.getSnapshot())}
+    useTheme={selector => selector(signedIn.hooks.theme.getSnapshot())} wide openOnboarding={() => {}} openSettings={() => {}}
+    t={key => key in en ? en[key as AccountKey] : key} />)
+  fireEvent.click(screen.getByRole('button', { name: en.menu }))
+  expect(signedIn.refreshAccount).toHaveBeenCalledOnce()
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: en.refreshBalance })) })
+  expect(signedIn.refreshAccount).toHaveBeenCalledTimes(2)
+})
+
+it('renders gateway subscription points in AccountSection when subscriptions are present', () => {
+  mount({ status: 'credential-stored', attempt: null }, zh, {
+    balance: {
+      status: 'ready',
+      value: [{ currency: 'CNY', balance: '30' }],
+      bonusWallets: [],
+      subscriptions: [{
+        subscriptionId: 8, planId: 1, totalPoints: '40', usedPoints: '1', remainingPoints: '39', unlimited: false, endTime: 1_798_000_000,
+      }],
+    },
+  })
+  expect(screen.getByText('¥30.00')).toBeTruthy()
+  expect(screen.getByText(zh.subscriptionPoints)).toBeTruthy()
+  expect(screen.getByText('39 / 40')).toBeTruthy()
+})
+
+it('treats unlimited subscriptions as available onboarding credit even when remaining points are zero', () => {
+  const zeroWallet = [{ currency: 'CNY' as const, balance: '0' }]
+  const sub = {
+    subscriptionId: 8, planId: 1, totalPoints: '40', usedPoints: '40',
+    remainingPoints: '0', unlimited: true, endTime: 1_798_000_000,
+  }
+  expect(hasOnboardingCredit({ status: 'ready', value: zeroWallet, bonusWallets: [], subscriptions: [sub] })).toBe(true)
+  expect(hasOnboardingCredit({
+    status: 'ready', value: zeroWallet, bonusWallets: [], subscriptions: [{ ...sub, unlimited: false }],
+  })).toBe(false)
+  expect(hasOnboardingCredit({
+    status: 'ready', value: zeroWallet, bonusWallets: [], subscriptions: [{ ...sub, unlimited: false, remainingPoints: '39' }],
+  })).toBe(true)
+})
+
+it('renders desktop usage logs with pagination and hides when unsupported', async () => {
+  const loadUsageLogs = vi.fn(async (query: { page?: number }) => ({
+    status: 'ready' as const,
+    value: {
+      page: query.page ?? 1,
+      pageSize: 20,
+      total: 25,
+      items: [{
+        id: 4101,
+        createdAt: 1_700_000_000,
+        modelName: 'deepseek-v4-pro',
+        type: query.page === 2 ? 5 : 2,
+        promptTokens: 11,
+        completionTokens: 7,
+        quota: 0,
+        subscriptionQuota: 9,
+        tokenName: 'default',
+        requestId: 'req-1',
+        httpStatus: 200,
+        useTime: 2,
+        isStream: true,
+        cacheHit: false,
+        taskSettle: false,
+      }],
+    },
+  }))
+  const operations = { ...operationsOf({ status: 'credential-stored', attempt: null }), loadUsageLogs }
+  const view = render(<AccountSection {...({} as GlobalStandardProps)} {...operations} close={() => {}}
+    useAccount={selector => selector(operations.hooks.account.getSnapshot())}
+    useTheme={selector => selector(operations.hooks.theme.getSnapshot())}
+    t={key => key in zh ? zh[key as AccountKey] : key} />)
+
+  expect(await screen.findByText('deepseek-v4-pro')).toBeTruthy()
+  expect(screen.getByText('11 + 7 tokens')).toBeTruthy()
+  expect(screen.getByText('9')).toBeTruthy()
+  expect(screen.getByText('1 / 2')).toBeTruthy()
+
+  fireEvent.click(screen.getByRole('button', { name: zh.usageLogsNext }))
+  await vi.waitFor(() => { expect(loadUsageLogs).toHaveBeenCalledWith({ page: 2, pageSize: 20 }) })
+  expect(await screen.findByText(zh.usageLogsErrorTag)).toBeTruthy()
+
+  const hiddenLoader = vi.fn(async () => null)
+  const hiddenOps = { ...operationsOf({ status: 'credential-stored', attempt: null }), loadUsageLogs: hiddenLoader }
+  view.rerender(<AccountSection {...({} as GlobalStandardProps)} {...hiddenOps} close={() => {}}
+    useAccount={selector => selector(hiddenOps.hooks.account.getSnapshot())}
+    useTheme={selector => selector(hiddenOps.hooks.theme.getSnapshot())}
+    t={key => key in zh ? zh[key as AccountKey] : key} />)
+  await vi.waitFor(() => { expect(screen.queryByText(zh.usageLogsTitle)).toBeNull() })
+})
+
+it('renders cloud conversation history list, message detail, and earlier pagination', async () => {
+  const loadConversations = vi.fn(async () => ({
+    status: 'ready' as const,
+    value: {
+      items: [{
+        id: 'conv-1',
+        title: '测试会话',
+        revision: 3,
+        createTime: '2026-11-23T08:00:00Z',
+        updateTime: '2026-11-23T08:05:00Z',
+      }],
+      hasMore: false,
+    },
+  }))
+  const loadConversationMessages = vi.fn(async (_id: string, query: { before?: number; revision?: number }) => ({
+    status: 'ready' as const,
+    value: query.before === 51 ? {
+      revision: 3,
+      items: [{
+        id: 'msg-0',
+        sequence: 50,
+        payload: { key: 'msg-0', from: 'user', versions: [{ id: 'v0', content: '更早的问题' }] },
+      }],
+      hasMore: false,
+    } : {
+      revision: 3,
+      items: [{
+        id: 'msg-1',
+        sequence: 51,
+        payload: { key: 'msg-1', from: 'assistant', versions: [{ id: 'v1', content: '你好，有什么可以帮助你的？' }] },
+      }],
+      hasMore: true,
+    },
+  }))
+  const operations = { ...operationsOf({ status: 'credential-stored', attempt: null }), loadConversations, loadConversationMessages }
+  render(<AccountSection {...({} as GlobalStandardProps)} {...operations} close={() => {}}
+    useAccount={selector => selector(operations.hooks.account.getSnapshot())}
+    useTheme={selector => selector(operations.hooks.theme.getSnapshot())}
+    t={key => key in zh ? zh[key as AccountKey] : key} />)
+
+  const convBtn = await screen.findByRole('button', { name: /测试会话/ })
+  fireEvent.click(convBtn)
+  expect(await screen.findByText('你好，有什么可以帮助你的？')).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: zh.conversationsLoadEarlier }))
+  await vi.waitFor(() => {
+    expect(loadConversationMessages).toHaveBeenCalledWith('conv-1', { limit: 50, before: 51, revision: 3 })
+  })
+  expect(await screen.findByText('更早的问题')).toBeTruthy()
 })

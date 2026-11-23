@@ -108,15 +108,28 @@ it.each(['http://remote.example', 'https://notifications.example/path'])(
   },
 )
 
-it('gates off DeepSeek profile/balance/logout requests on gateway deployments', async () => {
+it('gates off DeepSeek profile/balance/logout requests on gateway deployments and queries desktop balance', async () => {
   const account = await fixture('http://10.1.2.3:3000', {
     platformOrigin: 'http://10.1.2.3:3000', allowLoopbackHttp: true, platformAccountApis: false,
   })
-  const fetcher = vi.spyOn(globalThis, 'fetch')
-  const client = { version: 'test', locale: 'en', timezoneOffsetSeconds: 0 }
-  expect(await account.getProfile(client)).toEqual({ status: 'failed' })
-  expect(await account.getBalance(client)).toEqual({ status: 'failed' })
-  // Signed-in state survives the failed account reads; no DeepSeek endpoint is contacted.
-  expect(await account.getState()).toMatchObject({ status: 'credential-stored' })
-  expect(fetcher).not.toHaveBeenCalled()
+  const calls: Array<{ url: string; authorization: string | null }> = []
+  const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    calls.push({ url: requestUrl, authorization: new Headers(init?.headers).get('authorization') })
+    return Promise.resolve(new Response(JSON.stringify({ error: 'invalid_token' }), { status: 401 }))
+  })
+  const output = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+  try {
+    const client = { version: 'test', locale: 'en', timezoneOffsetSeconds: 0 }
+    expect(await account.getProfile(client)).toEqual({ status: 'failed' })
+    expect(calls).toEqual([])
+    expect(await account.getBalance(client)).toEqual({ status: 'failed' })
+    expect(calls).toEqual([{ url: 'http://10.1.2.3:3000/api/desktop-auth/balance', authorization: 'Bearer fixture-token' }])
+    // Signed-in state survives a 401 on desktop balance; no DeepSeek endpoint is contacted.
+    expect(await account.getState()).toMatchObject({ status: 'credential-stored' })
+    expect(fetcher).toHaveBeenCalledOnce()
+  } finally {
+    output.mockRestore()
+    fetcher.mockRestore()
+  }
 })

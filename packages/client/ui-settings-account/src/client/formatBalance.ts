@@ -15,7 +15,26 @@ export function formatBalance(amount: string, symbol: '¥' | '$'): string {
   return `${symbol}${addCommas(value.round(2, Big.roundDown).toFixed(2))}`
 }
 
+/**
+ * Format gateway subscription points cleanly without trailing decimal zeros.
+ * @param amount - validated decimal point string.
+ * @returns grouped point string (`0`, `39`, `1,894.37`, `1,234.5`, `<0.01`).
+ */
+export function formatPoints(amount: string): string {
+  const value = new Big(amount)
+  if (value.eq(0)) return '0'
+  if (value.lt(0)) {
+    return value.gt(-0.01) ? '-0.01' : `-${trimDecimal(addCommas(value.abs().toFixed(2)))}`
+  }
+  if (value.lt('0.01')) return '<0.01'
+  return trimDecimal(addCommas(value.round(2, Big.roundDown).toFixed(2)))
+}
+
 function addCommas(value: string): string {
   const [integer, fraction] = value.split('.')
   return `${Number(integer).toLocaleString()}.${fraction}`
+}
+
+function trimDecimal(value: string): string {
+  return value.replace(/\.?0+$/u, '')
 }

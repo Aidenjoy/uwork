@@ -70,6 +70,97 @@ async function fixture(
   const logoutHeaders: Array<string | undefined> = []
   let desktopRevokeCount = 0
   const desktopRevokeHeaders: Array<string | undefined> = []
+  let desktopBalanceStatus = 200
+  let desktopBalanceRaw: string | undefined
+  let desktopBalancePayload: unknown = {
+    success: true,
+    data: {
+      user_id: 329,
+      wallet_balance: 30,
+      wallet_quota: 15_000_000,
+      quota_display_type: 'USD',
+      subscriptions: [{
+        subscription_id: 8,
+        plan_id: 1,
+        total_points: 40,
+        used_points: 1,
+        remaining_points: 39,
+        unlimited: false,
+        end_time: 1_798_000_000,
+      }],
+    },
+  }
+  const desktopBalanceRequests: Array<string | undefined> = []
+  let desktopUsageLogsStatus = 200
+  let desktopUsageLogsRaw: string | undefined
+  let desktopUsageLogsPayload: unknown = {
+    success: true,
+    message: '',
+    data: {
+      page: 1,
+      page_size: 20,
+      total: 1,
+      items: [{
+        id: 4101,
+        created_at: 1_700_000_000,
+        model_name: 'example-model',
+        type: 2,
+        prompt_tokens: 11,
+        completion_tokens: 7,
+        quota: 5,
+        subscription_quota: 9,
+        token_name: 'example-key-name',
+        request_id: 'example-request-id',
+        http_status: 200,
+        use_time: 2,
+        is_stream: true,
+        cache_hit: false,
+        task_settle: false,
+      }],
+    },
+  }
+  const desktopUsageLogsRequests: Array<{ url: string; authorization: string | undefined }> = []
+  let desktopConversationsStatus = 200
+  let desktopConversationsPayload: unknown = {
+    success: true,
+    message: '',
+    data: {
+      items: [{
+        id: '550e8400-e29b-41d4-a716-446655440000',
+        title: '测试会话',
+        revision: 3,
+        create_time: '2026-11-23T08:00:00Z',
+        update_time: '2026-11-23T08:05:00Z',
+      }],
+      has_more: false,
+    },
+  }
+  const desktopConversationMessagesPayload: unknown = {
+    success: true,
+    message: '',
+    data: {
+      revision: 3,
+      items: [{
+        id: 'msg-user-1',
+        sequence: 51,
+        payload: { key: 'msg-user-1', from: 'user', versions: [{ id: 'v1', content: '你好' }], status: 'complete' },
+      }],
+      has_more: true,
+    },
+  }
+  let desktopConversationPatchStatus = 200
+  const desktopConversationPatchPayload: unknown = {
+    success: true,
+    message: '',
+    data: {
+      id: '550e8400-e29b-41d4-a716-446655440000',
+      title: '测试会话',
+      revision: 4,
+      create_time: '2026-11-23T08:00:00Z',
+      update_time: '2026-11-23T08:06:00Z',
+    },
+  }
+  const desktopConversationRequests: Array<{ method: string; url: string; authorization: string | undefined }> = []
   let normalWallets: unknown = [{ currency: 'CNY', balance: '123.45', token_estimation: '0' },
     { currency: 'USD', balance: '6.78', token_estimation: '0' }]
   let bonusWallets: unknown = [{ currency: 'CNY', balance: '10.00' }]
@@ -86,7 +177,11 @@ async function fixture(
     authorization: string | undefined
   }> = []
   const handle = async (req: IncomingMessage, res: ServerResponse) => {
-    if (req.url !== '/api/desktop-auth/revoke') expect(req.headers.authorization).toBeUndefined()
+    const reqPath = req.url?.split('?')[0]
+    if (reqPath !== '/api/desktop-auth/revoke' && reqPath !== '/api/desktop-auth/balance'
+      && reqPath !== '/api/desktop/usage-logs' && !reqPath?.startsWith('/api/conversations')) {
+      expect(req.headers.authorization).toBeUndefined()
+    }
     receivedHeaders.push({ clientPlatform: req.headers['x-client-platform'] as string | undefined,
       bundleId: req.headers['x-client-bundle-id'] as string | undefined,
       version: req.headers['x-client-version'] as string | undefined,
@@ -94,6 +189,41 @@ async function fixture(
       timezoneOffset: req.headers['x-client-timezone-offset'] as string | undefined,
       path: req.url, cookie: req.headers.cookie, authorization: req.headers['x-dsh-auth-token'] as string | undefined })
     if (redirect) { res.writeHead(302, { location: `${origin}/redirect-target` }).end(); return }
+    if (req.url === '/api/desktop-auth/balance' && req.method === 'GET') {
+      desktopBalanceRequests.push(req.headers.authorization)
+      if (detailsHold || balanceHold) await release.promise
+      if (desktopBalanceStatus !== 200) { res.writeHead(desktopBalanceStatus).end(); return }
+      res.setHeader('content-type', 'application/json')
+      res.end(desktopBalanceRaw ?? JSON.stringify(desktopBalancePayload))
+      return
+    }
+    if (reqPath === '/api/desktop/usage-logs' && req.method === 'GET') {
+      desktopUsageLogsRequests.push({ url: req.url ?? '', authorization: req.headers.authorization })
+      if (desktopUsageLogsStatus !== 200) { res.writeHead(desktopUsageLogsStatus).end(); return }
+      res.setHeader('content-type', 'application/json')
+      res.end(desktopUsageLogsRaw ?? JSON.stringify(desktopUsageLogsPayload))
+      return
+    }
+    if (reqPath === '/api/conversations' && req.method === 'GET') {
+      desktopConversationRequests.push({ method: 'GET', url: req.url ?? '', authorization: req.headers.authorization })
+      if (desktopConversationsStatus !== 200) { res.writeHead(desktopConversationsStatus).end(); return }
+      res.setHeader('content-type', 'application/json')
+      res.end(JSON.stringify(desktopConversationsPayload))
+      return
+    }
+    if (reqPath?.startsWith('/api/conversations/') && reqPath.endsWith('/messages') && req.method === 'GET') {
+      desktopConversationRequests.push({ method: 'GET', url: req.url ?? '', authorization: req.headers.authorization })
+      res.setHeader('content-type', 'application/json')
+      res.end(JSON.stringify(desktopConversationMessagesPayload))
+      return
+    }
+    if (reqPath?.startsWith('/api/conversations/') && req.method === 'PATCH') {
+      desktopConversationRequests.push({ method: 'PATCH', url: req.url ?? '', authorization: req.headers.authorization })
+      if (desktopConversationPatchStatus !== 200) { res.writeHead(desktopConversationPatchStatus).end(); return }
+      res.setHeader('content-type', 'application/json')
+      res.end(JSON.stringify(desktopConversationPatchPayload))
+      return
+    }
     if (req.url === '/api/desktop-auth/revoke') {
       desktopRevokeCount++
       desktopRevokeHeaders.push(req.headers.authorization)
@@ -221,6 +351,18 @@ async function fixture(
   return { cancellations, cancellationReceived, holdCancel: () => { holdCancel = true },
     ctx, account, home, origin, callbackOrigin, wait, receivedHeaders, logoutHeaders, logoutCount: () => logoutCount,
     desktopRevokeHeaders, desktopRevokeCount: () => desktopRevokeCount,
+    desktopBalanceRequests,
+    setDesktopBalanceStatus: (status: number) => { desktopBalanceStatus = status },
+    setDesktopBalancePayload: (value: unknown) => { desktopBalancePayload = value },
+    desktopUsageLogsRequests,
+    setDesktopUsageLogsStatus: (value: number) => { desktopUsageLogsStatus = value },
+    setDesktopUsageLogsPayload: (value: unknown) => { desktopUsageLogsPayload = value },
+    setDesktopUsageLogsRaw: (value: string | undefined) => { desktopUsageLogsRaw = value },
+    desktopConversationRequests,
+    setDesktopConversationsStatus: (value: number) => { desktopConversationsStatus = value },
+    setDesktopConversationsPayload: (value: unknown) => { desktopConversationsPayload = value },
+    setDesktopConversationPatchStatus: (value: number) => { desktopConversationPatchStatus = value },
+    setDesktopBalanceRaw: (value: string | undefined) => { desktopBalanceRaw = value },
     holdLogout: () => { logoutHold = true },
     failLogout: (failed: boolean) => { logoutFailed = failed }, detailRequests, detailsStarted,
     detailCode: (code: number) => { detailCode = code },
@@ -831,9 +973,9 @@ it('returns the profile while the balance request is still pending', async () =>
 })
 
 
-it('serves the sign-in snapshot when the deployment has no DeepSeek account APIs', async () => {
-  // utoken implements desktop login and inference only: the profile and balance endpoints do not
-  // exist there, so the gateway profile comes from the exchange snapshot instead of a doomed request.
+it('serves the sign-in snapshot and desktop balance when the deployment has no DeepSeek account APIs', async () => {
+  // utoken serves desktop profile from the exchange snapshot and balances from GET /api/desktop-auth/balance,
+  // avoiding DeepSeek-only endpoints (/auth-api/v0/users/current, /api/v0/users/get_user_summary).
   const f = await fixture(undefined, {}, {}, undefined, undefined, '', null, 30_000, {},
     { platformAccountApis: false })
   f.setDesktopUser({ id: 7, username: 'alice', display_name: '', role: 1, group: 'default' })
@@ -843,7 +985,21 @@ it('serves the sign-in snapshot when the deployment has no DeepSeek account APIs
   expect(await f.account.getProfile(clientMetadata())).toEqual({
     status: 'ready', value: { id: '7', name: 'alice', contact: null, username: 'alice', role: 1, group: 'default' },
   })
-  expect(await f.account.getBalance(clientMetadata())).toEqual({ status: 'failed' })
+  expect(await f.account.getBalance(clientMetadata())).toEqual({
+    status: 'ready',
+    value: [{ currency: 'CNY', balance: '30' }],
+    bonusWallets: [],
+    subscriptions: [{
+      subscriptionId: 8,
+      planId: 1,
+      totalPoints: '40',
+      usedPoints: '1',
+      remainingPoints: '39',
+      unlimited: false,
+      endTime: 1_798_000_000,
+    }],
+  })
+  expect(f.desktopBalanceRequests).toEqual([`Bearer ${'A'.repeat(43)}`])
   expect(f.detailRequests).toEqual([])
   // A gateway deployment skips DeepSeek's logout endpoint and revokes its own desktop session instead.
   await f.account.signOut(clientMetadata())
@@ -852,7 +1008,198 @@ it('serves the sign-in snapshot when the deployment has no DeepSeek account APIs
   expect(f.desktopRevokeHeaders).toEqual([`Bearer ${'A'.repeat(43)}`])
   // The snapshot is bound to the origin that issued it and disappears with the grant.
   expect(await f.account.getProfile(clientMetadata())).toBeNull()
+  expect(await f.account.getBalance(clientMetadata())).toBeNull()
   expect(await f.ctx.credentials.readRecord(credentialKey('deepseek-account-platform', 'profile'))).toBeUndefined()
+})
+
+it('parses CNY desktop balances, unlimited or null subscriptions, and optional plan titles', async () => {
+  const f = await fixture(undefined, {}, {}, undefined, undefined, '', null, 30_000, {},
+    { platformAccountApis: false })
+  f.setDesktopUser({ id: 7, username: 'alice', display_name: 'Alice', role: 1, group: 'vip' })
+  await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'desktop')
+  await f.wait('waiting-browser')
+  await fetch(f.callback(), { redirect: 'manual' })
+  f.setDesktopBalancePayload({
+    success: true,
+    data: {
+      user_id: 7,
+      wallet_balance: '1894.37',
+      quota_display_type: 'CNY',
+      subscriptions: [{
+        subscription_id: 9, plan_id: 2, plan_title: '体验版',
+        total_points: '0', used_points: '12.5', remaining_points: '0', unlimited: true, end_time: 1_798_000_000,
+      }],
+    },
+  })
+  expect(await f.account.getBalance(clientMetadata())).toEqual({
+    status: 'ready',
+    value: [{ currency: 'CNY', balance: '1894.37' }],
+    bonusWallets: [],
+    subscriptions: [{
+      subscriptionId: 9, planId: 2, planTitle: '体验版',
+      totalPoints: '0', usedPoints: '12.5', remainingPoints: '0', unlimited: true, endTime: 1_798_000_000,
+    }],
+  })
+  f.setDesktopBalancePayload({
+    success: true,
+    data: { wallet_balance: 0, quota_display_type: 'TOKENS', subscriptions: null },
+  })
+  expect(await f.account.getBalance(clientMetadata())).toEqual({
+    status: 'ready', value: [{ currency: 'CNY', balance: '0' }], bonusWallets: [], subscriptions: [],
+  })
+})
+
+it('degrades desktop balance errors and 401 without signing out', async () => {
+  const output = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+  try {
+    const f = await fixture(undefined, {}, {}, undefined, undefined, '', null, 30_000, {},
+      { platformAccountApis: false })
+    expect(await f.account.getBalance(clientMetadata())).toBeNull()
+    expect(f.desktopBalanceRequests).toEqual([])
+    await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'desktop')
+    await f.wait('waiting-browser')
+    await fetch(f.callback(), { redirect: 'manual' })
+    for (const setup of [
+      () => { f.setDesktopBalanceStatus(401) },
+      () => { f.setDesktopBalanceStatus(500) },
+      () => { f.setDesktopBalanceStatus(200); f.setDesktopBalancePayload({ success: false, data: null }) },
+      () => { f.setDesktopBalanceStatus(200); f.setDesktopBalancePayload(null); f.setDesktopBalanceRaw('{bad') },
+    ]) {
+      setup()
+      expect(await f.account.getBalance(clientMetadata())).toEqual({ status: 'failed' })
+      expect(await f.account.getState()).toMatchObject({ status: 'credential-stored' })
+    }
+  } finally {
+    output.mockRestore()
+  }
+})
+
+it('queries utoken desktop usage logs, clamps offset, and degrades errors without signing out', async () => {
+  const output = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+  try {
+    const platform = await fixture()
+    await storeAccount(platform)
+    expect(await platform.account.getUsageLogs(clientMetadata())).toBeNull()
+
+    const f = await fixture(undefined, {}, {}, undefined, undefined, '', null, 30_000, {},
+      { platformAccountApis: false })
+    expect(await f.account.getUsageLogs(clientMetadata())).toBeNull()
+    await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'desktop')
+    await f.wait('waiting-browser')
+    await fetch(f.callback(), { redirect: 'manual' })
+
+    expect(await f.account.getUsageLogs(clientMetadata(), { page: 999, pageSize: 20 })).toEqual({
+      status: 'ready',
+      value: {
+        page: 1,
+        pageSize: 20,
+        total: 1,
+        items: [{
+          id: 4101,
+          createdAt: 1_700_000_000,
+          modelName: 'example-model',
+          type: 2,
+          promptTokens: 11,
+          completionTokens: 7,
+          quota: 5,
+          subscriptionQuota: 9,
+          tokenName: 'example-key-name',
+          requestId: 'example-request-id',
+          httpStatus: 200,
+          useTime: 2,
+          isStream: true,
+          cacheHit: false,
+          taskSettle: false,
+        }],
+      },
+    })
+    expect(f.desktopUsageLogsRequests).toEqual([
+      { url: '/api/desktop/usage-logs?p=500&page_size=20', authorization: `Bearer ${'A'.repeat(43)}` },
+    ])
+
+    for (const setup of [
+      () => { f.setDesktopUsageLogsStatus(401) },
+      () => { f.setDesktopUsageLogsStatus(400) },
+      () => { f.setDesktopUsageLogsStatus(500) },
+      () => { f.setDesktopUsageLogsStatus(200); f.setDesktopUsageLogsPayload({ success: false, message: 'err', data: null }) },
+      () => { f.setDesktopUsageLogsStatus(200); f.setDesktopUsageLogsPayload(null); f.setDesktopUsageLogsRaw('{bad') },
+    ]) {
+      setup()
+      expect(await f.account.getUsageLogs(clientMetadata())).toEqual({ status: 'failed' })
+      expect(await f.account.getState()).toMatchObject({ status: 'credential-stored' })
+    }
+  } finally {
+    output.mockRestore()
+  }
+})
+
+it('lists, reads, and patches utoken cloud conversations, handling 409 conflicts and 401 without signing out', async () => {
+  const output = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+  try {
+    const platform = await fixture()
+    await storeAccount(platform)
+    expect(await platform.account.listConversations(clientMetadata())).toBeNull()
+
+    const f = await fixture(undefined, {}, {}, undefined, undefined, '', null, 30_000, {},
+      { platformAccountApis: false })
+    expect(await f.account.listConversations(clientMetadata())).toBeNull()
+    await f.account.startSignIn(clientMetadata(), f.callbackOrigin, 'desktop')
+    await f.wait('waiting-browser')
+    await fetch(f.callback(), { redirect: 'manual' })
+
+    expect(await f.account.listConversations(clientMetadata(), { offset: 0, limit: 30 })).toEqual({
+      status: 'ready',
+      value: {
+        items: [{
+          id: '550e8400-e29b-41d4-a716-446655440000',
+          title: '测试会话',
+          revision: 3,
+          createTime: '2026-11-23T08:00:00Z',
+          updateTime: '2026-11-23T08:05:00Z',
+        }],
+        hasMore: false,
+      },
+    })
+
+    expect(await f.account.getConversationMessages(clientMetadata(), '550e8400-e29b-41d4-a716-446655440000', {
+      limit: 50, before: 51, revision: 3,
+    })).toEqual({
+      status: 'ready',
+      value: {
+        revision: 3,
+        items: [{
+          id: 'msg-user-1',
+          sequence: 51,
+          payload: { key: 'msg-user-1', from: 'user', versions: [{ id: 'v1', content: '你好' }], status: 'complete' },
+        }],
+        hasMore: true,
+      },
+    })
+
+    expect(await f.account.patchConversation(clientMetadata(), '550e8400-e29b-41d4-a716-446655440000', {
+      revision: 3, mutationId: 'mut-1', title: '测试会话', messages: [], deletedIds: [],
+    })).toEqual({
+      status: 'ready',
+      value: {
+        id: '550e8400-e29b-41d4-a716-446655440000',
+        title: '测试会话',
+        revision: 4,
+        createTime: '2026-11-23T08:00:00Z',
+        updateTime: '2026-11-23T08:06:00Z',
+      },
+    })
+
+    f.setDesktopConversationPatchStatus(409)
+    expect(await f.account.patchConversation(clientMetadata(), '550e8400-e29b-41d4-a716-446655440000', {
+      revision: 3, mutationId: 'mut-2', title: '测试会话', messages: [], deletedIds: [],
+    })).toEqual({ status: 'conflict' })
+
+    f.setDesktopConversationsStatus(401)
+    expect(await f.account.listConversations(clientMetadata())).toEqual({ status: 'failed' })
+    expect(await f.account.getState()).toMatchObject({ status: 'credential-stored' })
+  } finally {
+    output.mockRestore()
+  }
 })
 
 it('keeps a valid grant when the exchange omits the account snapshot', async () => {

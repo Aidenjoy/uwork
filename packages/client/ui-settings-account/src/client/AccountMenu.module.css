@@ -37,3 +37,10 @@
 }
 
 .signedOutMenu [role='menuitem'] > span:first-child:not(:last-child) svg { width: 16px; height: 16px; }
+
+/* Signed-in popover card hosting nested profile + balance cards above menu actions. */
+.signedInMenu[role='menu'] {
+  width: 276px;
+  max-width: calc(100vw - 24px);
+  padding: 6px;
+}

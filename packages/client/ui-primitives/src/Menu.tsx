@@ -137,6 +137,7 @@ export function MenuItemButton({ onSelect, ...props }: MenuItemButtonProps) {
  * @param props.anchorRef - external element used as the CSS anchor in portal mode.
  * @param props.anchorPoint - client viewport coordinates captured when a context menu opens.
  * @param props.minWidthFromAnchor - in portal mode, keep the menu at least as wide as its anchor, bounded by viewport margins.
+ * @param props.header - non-menu content pinned above the scrolling items area, separated by a hairline.
  * @param props.footer - rows pinned below the scrolling items area, separated
  * by a hairline; contextual menus reuse an explicit leading separator. These rows stay visible while the items above scroll.
  * @param props.children - component rows rendered after `items` in the same
@@ -153,7 +154,7 @@ export function MenuItemButton({ onSelect, ...props }: MenuItemButtonProps) {
  * document.body outside the owner's DOM subtree.
  * @returns anchor wrapper with the conditional list.
  */
-export function Menu({ open, anchor, items = [], children, submenuBackLabel, selectedId, selectedIds, onSelect, onClose, align = 'start', side = 'bottom', portal = false, closeOnPointerLeave = false, dense = false, compact = false, autoFocus = false, selection = 'check', anchorRef, anchorPoint, minWidthFromAnchor = false, footer, className, listClassName, contextual = false, exiting, returnFocus, isExternalTrigger }: {
+export function Menu({ open, anchor, items = [], children, header, submenuBackLabel, selectedId, selectedIds, onSelect, onClose, align = 'start', side = 'bottom', portal = false, closeOnPointerLeave = false, dense = false, compact = false, autoFocus = false, selection = 'check', anchorRef, anchorPoint, minWidthFromAnchor = false, footer, className, listClassName, contextual = false, exiting, returnFocus, isExternalTrigger }: {
   open: boolean
   /** Pointer-positioned popup: cursor clearance, grouped icons, and context gestures. */
   contextual?: boolean
@@ -168,6 +169,7 @@ export function Menu({ open, anchor, items = [], children, submenuBackLabel, sel
   items?: readonly MenuEntry[]
   /** Localized return action; omitted uses the caller's parent label with a back arrow. */
   submenuBackLabel?: string | undefined
+  header?: ReactNode
   children?: ReactNode
   footer?: readonly MenuEntry[]
   selectedId?: string | undefined
@@ -318,7 +320,7 @@ export function Menu({ open, anchor, items = [], children, submenuBackLabel, sel
   useEffect(() => {
     if (!open || !positioned || exiting !== undefined || !autoFocus
       || listRef.current?.contains(document.activeElement) || submenu.contains(document.activeElement)) return
-    const first = listRef.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')
+    const first = listRef.current?.querySelector<HTMLButtonElement>('button[role="menuitem"]:not(:disabled)')
     walkIndex.current = first === undefined || first === null ? null : 0
     if (first != null) focusWithoutRing(first)
   }, [open, autoFocus, items.length, footer?.length, positioned, exiting])
@@ -397,7 +399,7 @@ export function Menu({ open, anchor, items = [], children, submenuBackLabel, sel
           }
           return
         }
-        const row = list.querySelector<HTMLButtonElement>('button:not(:disabled)')
+        const row = list.querySelector<HTMLButtonElement>('button[role="menuitem"]:not(:disabled)')
         if (row === null) return
         e.preventDefault()
         row.focus()
@@ -415,7 +417,7 @@ export function Menu({ open, anchor, items = [], children, submenuBackLabel, sel
       if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return
       const list = submenuEvents.current.activeList(focused)
       if (list === null || !anchored) return
-      const buttons = Array.from(list.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'))
+      const buttons = Array.from(list.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]:not(:disabled)'))
       if (buttons.length === 0) return
       const index = buttons.indexOf(focused as HTMLButtonElement)
       const from = index >= 0 ? index : walkIndex.current
@@ -517,6 +519,11 @@ export function Menu({ open, anchor, items = [], children, submenuBackLabel, sel
     >
       {/* Child cards anchor to this unscrolled box, which matches the card itself. */}
       {submenu.entry !== undefined && <span aria-hidden="true" className={css.submenuAnchor} style={{ anchorName: submenu.parentAnchor }} />}
+      {header !== undefined && (
+        <div className={css.header} role="presentation">
+          {header}
+        </div>
+      )}
       <div className={css.viewport} role="presentation">
         {items.map(entry => renderEntry(entry, itemColumns))}
         {children}

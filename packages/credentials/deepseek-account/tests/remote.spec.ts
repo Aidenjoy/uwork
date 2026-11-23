@@ -32,8 +32,9 @@ it('binds only client-safe operations to the existing account namespace', async 
   expect(account.typertRemote.serviceKey).toBe('deepseekAccount')
   expect(account.typertRemote.namespace).toBe('account')
   expect(remoteMethods(account).map(method => method.exportName ?? method.method).sort()).toEqual([
-    'cancelSignIn', 'getBalance', 'getNotificationContent', 'getNotifications', 'getProfile', 'getState',
-    'hasRunningAccountTasks', 'reportNotificationEvent', 'signOut', 'startSignIn', 'watch', 'watchExpiry',
+    'cancelSignIn', 'getBalance', 'getConversationMessages', 'getNotificationContent', 'getNotifications', 'getProfile',
+    'getState', 'getUsageLogs', 'hasRunningAccountTasks', 'listConversations', 'patchConversation',
+    'reportNotificationEvent', 'signOut', 'startSignIn', 'watch', 'watchExpiry',
   ])
   expect(remoteMethods(account).filter(method => method.mode === 'stream').map(method => method.exportName ?? method.method).sort())
     .toEqual(['watch', 'watchExpiry'])

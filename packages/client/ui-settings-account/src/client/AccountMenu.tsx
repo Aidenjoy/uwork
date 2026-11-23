@@ -9,6 +9,7 @@ import { SignOutDialog } from './SignOutDialog.tsx'
 import { SignInDialog } from './SignInDialog.tsx'
 import { LogoutIcon } from './LogoutIcon.tsx'
 import { AccountAvatar } from './AccountAvatar.tsx'
+import { AccountMenuHeader } from './AccountMenuHeader.tsx'
 import type {} from './account-ui.ts'
 import css from './AccountMenu.module.css'
 
@@ -21,7 +22,7 @@ export type AccountMenuProps = PropsRuntime<'settings.launcher'> & PropsRenderSl
  */
 export function AccountMenu({
   subscribeSessionExpired, subscribeModelSignInRequired, wide, settingsShortcut, openSettings, openOnboarding, settingsOpen,
-  useAccount, useTheme, signOut, hasRunningAccountTasks, refreshAccount, renderSlot,
+  useAccount, useTheme, signOut, hasRunningAccountTasks, refreshAccount, openPlatformPage, renderSlot,
   contactUs, showLogin, start, cancel, avatarFailed, t,
 }: AccountMenuProps) {
   // The launcher outlives the panel, so a false-to-true edge is one Settings entry:
@@ -40,8 +41,23 @@ export function AccountMenu({
   useEffect(() => subscribeSessionExpired?.(() => { setExpiryNotice(true) }), [subscribeSessionExpired])
   const profile = account.details?.profile
   const label = profile === undefined ? null : profile.status === 'ready'
-    ? profile.value.name ?? profile.value.contact ?? t('signedIn') : t('signedIn')
+    ? profile.value.name ?? profile.value.username ?? profile.value.contact ?? t('signedIn') : t('signedIn')
   const [open, setOpen] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  const mounted = useRef(true)
+  useEffect(() => () => { mounted.current = false }, [])
+  const menuWasOpen = useRef(false)
+  useEffect(() => {
+    // Refresh once per false-to-true open transition while signed in so popover balances stay fresh.
+    if (open && !menuWasOpen.current && signedIn) void refreshAccount().catch(() => undefined)
+    menuWasOpen.current = open
+  }, [open, refreshAccount, signedIn])
+  const manualRefresh = useCallback(() => {
+    setRefreshing(true)
+    void refreshAccount().catch(() => undefined).finally(() => {
+      if (mounted.current) setRefreshing(false)
+    })
+  }, [refreshAccount])
   const trigger = useRef<HTMLButtonElement>(null)
   const [busy, setBusy] = useState(false)
   const [signOutImpact, setSignOutImpact] = useState<boolean | 'unknown'>()
@@ -60,7 +76,13 @@ export function AccountMenu({
     <div className={css.notifications} hidden={!wide}>{renderSlot('settings.launcher.notifications', {
       active: signedIn && !account.desktopOnboardingVisible && !account.onboarding, openAccount,
     })}</div>
-    <Menu open={open} side="top" portal autoFocus className={css.anchor} listClassName={signedIn ? undefined : css.signedOutMenu}
+    <Menu open={open} side="top" portal autoFocus className={css.anchor}
+      listClassName={signedIn ? css.signedInMenu : css.signedOutMenu}
+      header={signedIn ? (
+        <AccountMenuHeader details={account.details} avatar={account.avatar} avatarFailed={avatarFailed}
+          links={account.view?.links} refreshing={refreshing} onRefresh={manualRefresh}
+          onCloseMenu={() => { setOpen(false) }} openPlatformPage={openPlatformPage} t={t} />
+      ) : undefined}
       anchor={<button ref={trigger} type="button" className={css.trigger} data-collapsed={!wide} data-signed-out={!signedIn} aria-label={t('menu')}
         aria-haspopup="menu" aria-expanded={open} onClick={() => { setOpen(value => !value) }}>
         {signedIn

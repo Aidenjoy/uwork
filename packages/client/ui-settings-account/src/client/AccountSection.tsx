@@ -2,7 +2,10 @@
 import { Big } from 'big.js'
 import { useEffect, useRef, useState, type MouseEvent } from 'react'
 import { Button, IconRightUpOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { AccountDetails, AccountView, SignInAttemptId } from '@deepseek-ai/dsh-deepseek-account/types'
+import type {
+  AccountConversationMessagesQuery, AccountConversationMessagesResult, AccountConversationsQuery,
+  AccountConversationsResult, AccountDetails, AccountUsageLogsQuery, AccountUsageLogsResult, AccountView, SignInAttemptId,
+} from '@deepseek-ai/dsh-deepseek-account/types'
 import type { PropsRuntime, PropsLocale, InjectFace, HostObservable } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ThemeSnapshot } from '@deepseek-ai/dsh-client-ui-theme/client'
 import type { PlatformPage, PlatformPages } from './platform-pages.ts'
@@ -10,6 +13,9 @@ import { formatBalance } from './formatBalance.ts'
 import { AccountAvatar } from './AccountAvatar.tsx'
 import type { AccountAvatarSnapshot } from './account-avatar.ts'
 import { authorizeUrlWithTheme } from './authorize-url.ts'
+import { summarizeSubscriptions } from './AccountMenuHeader.tsx'
+import { AccountUsageLogs } from './AccountUsageLogs.tsx'
+import { AccountConversations } from './AccountConversations.tsx'
 import css from './AccountSection.module.css'
 
 /** Safe account snapshot shared by the settings page and launcher. */
@@ -77,12 +83,21 @@ export interface AccountSectionInjected {
   hasRunningAccountTasks: () => Promise<boolean>
   /** @returns after local account credentials are removed. */
   signOut: () => Promise<void>
+  /** Query paginated utoken desktop usage logs; absent in tests that omit it. */
+  loadUsageLogs?: (query: AccountUsageLogsQuery) => Promise<AccountUsageLogsResult | null>
+  /** Query paginated utoken cloud conversations; absent in tests that omit it. */
+  loadConversations?: (query: AccountConversationsQuery) => Promise<AccountConversationsResult | null>
+  /** Query paginated messages for one utoken cloud conversation; absent in tests that omit it. */
+  loadConversationMessages?: (id: string, query: AccountConversationMessagesQuery) => Promise<AccountConversationMessagesResult | null>
 }
 /** Composed account section props. */
 export type AccountSectionProps =
   PropsRuntime<'settings.section'> & PropsLocale<'settings.account'> & InjectFace<AccountSectionInjected>
 /** @param props - localized actions, account subscription, and the shared Platform page channel. @returns account settings UI. */
-export function AccountSection({ t, useAccount, useTheme, start, cancel, openPlatformPage, avatarFailed }: AccountSectionProps) {
+export function AccountSection({
+  t, useAccount, useTheme, start, cancel, openPlatformPage, avatarFailed,
+  loadUsageLogs, loadConversations, loadConversationMessages,
+}: AccountSectionProps) {
   const { view: state, details, avatar, failed: streamFailed } = useAccount(value => value)
   const colorScheme = useTheme(snapshot => snapshot.active.colorScheme)
   // The shared host owns the native view; this page holds only its own request,
@@ -91,9 +106,12 @@ export function AccountSection({ t, useAccount, useTheme, start, cancel, openPla
   const [failed, setFailed] = useState(false)
   const [busy, setBusy] = useState(false)
   const profile = details?.profile?.status === 'ready' ? details.profile.value : undefined
-  const wallets = details?.balance?.status === 'ready' ? details.balance.value : undefined
-  const bonusWallets = details?.balance?.status === 'ready'
-    ? details.balance.bonusWallets.filter(wallet => new Big(wallet.balance).gt(0)) : []
+  const balanceReady = details?.balance?.status === 'ready' ? details.balance : undefined
+  const wallets = balanceReady?.value
+  const bonusWallets = balanceReady !== undefined
+    ? balanceReady.bonusWallets.filter(wallet => new Big(wallet.balance).gt(0)) : []
+  const subscriptions = balanceReady?.subscriptions ?? []
+  const subSummary = subscriptions.length > 0 ? summarizeSubscriptions(subscriptions) : undefined
   const showBonusRow = details?.balance?.status !== 'ready' || bonusWallets.length > 0
   const attempt = state?.attempt
   const active = attempt !== null && attempt !== undefined
@@ -203,6 +221,15 @@ export function AccountSection({ t, useAccount, useTheme, start, cancel, openPla
             </span>
           </div>
         </>}
+        {signedIn && subSummary !== undefined && subSummary.kind !== 'none' && <>
+          <div className={css.divider} />
+          <div className={css.row}>
+            <span>{t('subscriptionPoints')}</span>
+            <span className={css.amount}>
+              {subSummary.kind === 'unlimited' ? t('unlimited') : `${subSummary.remaining} / ${subSummary.total}`}
+            </span>
+          </div>
+        </>}
         <div className={css.divider} />
         <div className={css.row}>
           <span className={css.secondary}>{t('more')}</span>
@@ -214,6 +241,11 @@ export function AccountSection({ t, useAccount, useTheme, start, cancel, openPla
           </div>
         </div>
       </div>
+      {signedIn && loadUsageLogs !== undefined && <AccountUsageLogs loadUsageLogs={loadUsageLogs} t={t} />}
+      {signedIn && loadConversations !== undefined && loadConversationMessages !== undefined && (
+        <AccountConversations loadConversations={loadConversations}
+          loadConversationMessages={loadConversationMessages} t={t} />
+      )}
     </section>
   )
 }

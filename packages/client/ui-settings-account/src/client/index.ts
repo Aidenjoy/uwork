@@ -277,6 +277,21 @@ export function apply(ctx: Context): void {
       if (result.ok) return
       throw result.error
     },
+    async loadUsageLogs(query) {
+      const result = await ctx.remote.account.getUsageLogs(client(ctx.locale.getSnapshot().active), query)
+      if (!result.ok) return { status: 'failed' }
+      return result.value
+    },
+    async loadConversations(query) {
+      const result = await ctx.remote.account.listConversations(client(ctx.locale.getSnapshot().active), query)
+      if (!result.ok) return { status: 'failed' }
+      return result.value
+    },
+    async loadConversationMessages(id, query) {
+      const result = await ctx.remote.account.getConversationMessages(client(ctx.locale.getSnapshot().active), id, query)
+      if (!result.ok) return { status: 'failed' }
+      return result.value
+    },
   }
   if (desktopOnboarding) {
     const controller = new DesktopOnboardingController(
