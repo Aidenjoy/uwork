@@ -60,7 +60,6 @@ describe('Messages stream', () => {
   })
 
   it.each([
-    [start, start],
     [textEvents[1]],
     [start, { ...textEvents[1], index: -1 }],
     [start, textEvents[1], textEvents[1]],
@@ -77,6 +76,13 @@ describe('Messages stream', () => {
     [start, { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'x', name: 'read', input: [] } }],
   ])('rejects malformed event ordering or fields %#', async (...values) => {
     await expect(chunks(translate(events(values as Record<string, unknown>[]), MODEL))).rejects.toMatchObject({ code: 'MALFORMED_RESPONSE' })
+  })
+
+  it('tolerates duplicate message_start events from relay gateways', async () => {
+    const result = await chunks(translate(events([
+      start, start, textEvents[1], textEvents[2], textEvents[3], start, ...end(),
+    ]), MODEL))
+    expect(result.some(chunk => chunk.type === 'finish')).toBe(true)
   })
 
   it.each(['{', '[]'])('refuses completed non-object tool JSON %s without repairing it', async (partial_json) => {

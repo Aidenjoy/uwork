@@ -109,9 +109,13 @@ export async function* translate(events: AsyncIterable<Record<string, unknown>>,
   let reason: FinishReason | undefined
   for await (const event of events) {
     if (event.type === 'message_start') {
-      if (started) return malformed('duplicate message_start')
-      updateUsage(usage, object(event.message).usage)
-      started = true
+      if (!started) {
+        updateUsage(usage, object(event.message).usage)
+        started = true
+      } else if (event.message !== null && typeof event.message === 'object') {
+        // Relay gateways may emit duplicate message_start frames; merge any usage and keep the stream alive.
+        updateUsage(usage, (event.message as Record<string, unknown>).usage)
+      }
       continue
     }
     if (!['content_block_start', 'content_block_delta', 'content_block_stop', 'message_delta', 'message_stop'].includes(String(event.type))) {
