@@ -60,6 +60,15 @@ const desktopUsageLogItem = z.object({
   is_stream: z.boolean(),
   cache_hit: z.boolean(),
   task_settle: z.boolean(),
+  user_input: z.string().nullish(),
+  user_input_truncated: z.boolean().nullish(),
+  consumption: z.object({
+    wallet_amount: z.number(),
+    wallet_unit: z.string(),
+    wallet_symbol: z.string(),
+    subscription_points: z.number(),
+    subscription_unit: z.string(),
+  }).nullish(),
 })
 const desktopUsageLogsEnvelope = z.object({
   success: z.literal(true),
@@ -243,6 +252,17 @@ export async function readDesktopUsageLogs(origin: string, token: string, query:
           isStream: item.is_stream,
           cacheHit: item.cache_hit,
           taskSettle: item.task_settle,
+          ...typeof item.user_input === 'string' && item.user_input.length > 0 ? { userInput: item.user_input } : {},
+          ...typeof item.user_input_truncated === 'boolean' ? { userInputTruncated: item.user_input_truncated } : {},
+          ...item.consumption != null ? {
+            consumption: {
+              walletAmount: item.consumption.wallet_amount,
+              walletUnit: item.consumption.wallet_unit,
+              walletSymbol: item.consumption.wallet_symbol,
+              subscriptionPoints: item.consumption.subscription_points,
+              subscriptionUnit: item.consumption.subscription_unit,
+            },
+          } : {},
         })),
       },
     }

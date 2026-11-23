@@ -116,6 +116,11 @@ async function fixture(
         is_stream: true,
         cache_hit: false,
         task_settle: false,
+        user_input: '请帮我分析这段代码',
+        user_input_truncated: false,
+        consumption: {
+          wallet_amount: 0.25, wallet_unit: 'USD', wallet_symbol: '$', subscription_points: 0, subscription_unit: 'points',
+        },
       }],
     },
   }
@@ -1110,6 +1115,11 @@ it('queries utoken desktop usage logs, clamps offset, and degrades errors withou
           isStream: true,
           cacheHit: false,
           taskSettle: false,
+          userInput: '请帮我分析这段代码',
+          userInputTruncated: false,
+          consumption: {
+            walletAmount: 0.25, walletUnit: 'USD', walletSymbol: '$', subscriptionPoints: 0, subscriptionUnit: 'points',
+          },
         }],
       },
     })

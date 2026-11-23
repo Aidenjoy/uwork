@@ -885,8 +885,8 @@ it('renders desktop usage logs with pagination and hides when unsupported', asyn
     status: 'ready' as const,
     value: {
       page: query.page ?? 1,
-      pageSize: 20,
-      total: 25,
+      pageSize: 5,
+      total: 8,
       items: [{
         id: 4101,
         createdAt: 1_700_000_000,
@@ -903,6 +903,11 @@ it('renders desktop usage logs with pagination and hides when unsupported', asyn
         isStream: true,
         cacheHit: false,
         taskSettle: false,
+        userInput: '请帮我分析这段代码',
+        userInputTruncated: false,
+        consumption: {
+          walletAmount: 0, walletUnit: 'USD', walletSymbol: '$', subscriptionPoints: 1.5, subscriptionUnit: 'points',
+        },
       }],
     },
   }))
@@ -913,12 +918,12 @@ it('renders desktop usage logs with pagination and hides when unsupported', asyn
     t={key => key in zh ? zh[key as AccountKey] : key} />)
 
   expect(await screen.findByText('deepseek-v4-pro')).toBeTruthy()
-  expect(screen.getByText('11 + 7 tokens')).toBeTruthy()
-  expect(screen.getByText('9')).toBeTruthy()
+  expect(screen.getByText('请帮我分析这段代码')).toBeTruthy()
+  expect(screen.getByText('1.5 点数')).toBeTruthy()
   expect(screen.getByText('1 / 2')).toBeTruthy()
 
   fireEvent.click(screen.getByRole('button', { name: zh.usageLogsNext }))
-  await vi.waitFor(() => { expect(loadUsageLogs).toHaveBeenCalledWith({ page: 2, pageSize: 20 }) })
+  await vi.waitFor(() => { expect(loadUsageLogs).toHaveBeenCalledWith({ page: 2, pageSize: 5 }) })
   expect(await screen.findByText(zh.usageLogsErrorTag)).toBeTruthy()
 
   const hiddenLoader = vi.fn(async () => null)

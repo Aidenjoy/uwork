@@ -92,6 +92,13 @@
   color: var(--dsw-alias-label-primary);
 }
 
+.requestText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .requestMeta {
   font-size: 12px;
   color: var(--dsw-alias-label-tertiary);

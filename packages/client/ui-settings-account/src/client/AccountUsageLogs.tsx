@@ -7,11 +7,15 @@ import type {
 import type { AccountKey } from './locales.ts'
 import css from './AccountUsageLogs.module.css'
 
-const PAGE_SIZE = 20
+const PAGE_SIZE = 5
 const MAX_OFFSET = 9_999
 
 function formatInt(value: number): string {
   return new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(value)
+}
+
+function formatDecimal(value: number, maxFractionDigits: number): string {
+  return new Intl.NumberFormat('en-US', { minimumFractionDigits: 0, maximumFractionDigits: maxFractionDigits }).format(value)
 }
 
 function formatTimestamp(unixSeconds: number): string {
@@ -21,7 +25,19 @@ function formatTimestamp(unixSeconds: number): string {
     + `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
 
-function formatUsageQuota(item: AccountUsageLogItem): string {
+function formatUsageQuota(item: AccountUsageLogItem, pointsUnit: string): string {
+  if (item.consumption !== undefined) {
+    if (item.consumption.subscriptionPoints > 0) {
+      const unit = item.consumption.subscriptionUnit === 'points' ? pointsUnit : item.consumption.subscriptionUnit
+      return `${formatDecimal(item.consumption.subscriptionPoints, 6)} ${unit}`
+    }
+    if (item.consumption.walletAmount > 0) {
+      const digits = Math.abs(item.consumption.walletAmount) >= 1 ? 4 : 6
+      const formatted = formatDecimal(item.consumption.walletAmount, digits)
+      return item.consumption.walletSymbol !== '' ? `${item.consumption.walletSymbol}${formatted}` : formatted
+    }
+    return '0'
+  }
   if (item.subscriptionQuota > 0 && item.quota > 0) return `${formatInt(item.subscriptionQuota)} + ${formatInt(item.quota)}`
   if (item.subscriptionQuota > 0) return formatInt(item.subscriptionQuota)
   if (item.quota > 0) return formatInt(item.quota)
@@ -30,6 +46,13 @@ function formatUsageQuota(item: AccountUsageLogItem): string {
 
 function formatDuration(seconds: number): string {
   return `${seconds}s`
+}
+
+function formatRequestLabel(item: AccountUsageLogItem, tokensLabel: string): string {
+  if (item.userInput !== undefined && item.userInput.length > 0) {
+    return item.userInputTruncated === true ? `${item.userInput}…` : item.userInput
+  }
+  return `${formatInt(item.promptTokens)} + ${formatInt(item.completionTokens)} ${tokensLabel}`
 }
 
 /** Props for the AccountSection usage logs card. */
@@ -108,13 +131,15 @@ export function AccountUsageLogs({ loadUsageLogs, t }: AccountUsageLogsProps) {
               <div key={item.id} className={css.row}>
                 <div className={css.requestCol}>
                   <div className={css.requestMain}>
-                    <span>{`${formatInt(item.promptTokens)} + ${formatInt(item.completionTokens)} ${t('usageLogsTokens')}`}</span>
+                    <span className={css.requestText} title={item.userInput ?? undefined}>
+                      {formatRequestLabel(item, t('usageLogsTokens'))}
+                    </span>
                     {item.useTime > 0 && <span className={css.requestMeta}>{formatDuration(item.useTime)}</span>}
                     {item.type === 5 && <span className={css.errorTag}>{t('usageLogsErrorTag')}</span>}
                   </div>
                   <span className={css.requestMeta}>{formatTimestamp(item.createdAt)}</span>
                 </div>
-                <span className={css.usageCol}>{formatUsageQuota(item)}</span>
+                <span className={css.usageCol}>{formatUsageQuota(item, t('usageLogsPoints'))}</span>
                 <span className={css.modelCol} title={item.modelName}>{item.modelName}</span>
               </div>
             ))}

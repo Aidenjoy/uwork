@@ -103,6 +103,15 @@ export interface AccountUsageLogsQuery {
   readonly modelName?: string
 }
 
+/** Pre-converted wallet or subscription consumption display values from utoken. */
+export interface AccountUsageConsumption {
+  readonly walletAmount: number
+  readonly walletUnit: string
+  readonly walletSymbol: string
+  readonly subscriptionPoints: number
+  readonly subscriptionUnit: string
+}
+
 /** One model consume or error log entry returned by utoken desktop usage logs. */
 export interface AccountUsageLogItem {
   readonly id: number
@@ -123,6 +132,9 @@ export interface AccountUsageLogItem {
   readonly isStream: boolean
   readonly cacheHit: boolean
   readonly taskSettle: boolean
+  readonly userInput?: string
+  readonly userInputTruncated?: boolean
+  readonly consumption?: AccountUsageConsumption
 }
 
 /** Paginated usage logs envelope returned by utoken desktop usage logs. */
