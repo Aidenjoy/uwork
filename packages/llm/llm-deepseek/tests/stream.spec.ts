@@ -80,7 +80,7 @@ describe('Messages stream', () => {
 
   it('tolerates duplicate message_start events from relay gateways', async () => {
     const result = await chunks(translate(events([
-      start, start, textEvents[1], textEvents[2], textEvents[3], start, ...end(),
+      start, start, textEvents[1]!, textEvents[2]!, textEvents[3]!, start, ...end(),
     ]), MODEL))
     expect(result.some(chunk => chunk.type === 'finish')).toBe(true)
   })
