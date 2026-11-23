@@ -16,6 +16,7 @@
 
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
+import { BRAND_HOME_DIR_NAME } from './brand.generated.ts'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 
 /** File name searched in each candidate directory. */
@@ -94,7 +95,7 @@ function nearestConfig(start: string): string | undefined {
 /** Resolve the default Harness home without loading the shared path package's filesystem probes. */
 function defaultDshHome(environment: NodeJS.ProcessEnv): string {
   const configured = environment[DSH_HOME_ENV]
-  return configured !== undefined && configured.trim().length > 0 ? resolve(configured) : join(homedir(), '.dsh')
+  return configured !== undefined && configured.trim().length > 0 ? resolve(configured) : join(homedir(), BRAND_HOME_DIR_NAME)
 }
 
 /**

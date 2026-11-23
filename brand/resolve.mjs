@@ -51,7 +51,11 @@ export function loadProfile(key) {
   if (!/^[a-z0-9][a-z0-9-]*$/u.test(profile.artifactPrefix)) {
     throw new Error(`brand: profile "${key}" artifactPrefix must be lowercase kebab-case`)
   }
-  return Object.freeze(profile)
+  const homeDir = profile.homeDir ?? `.${profile.key}`
+  if (typeof homeDir !== 'string' || !/^\.[a-z0-9][a-z0-9-]*$/u.test(homeDir)) {
+    throw new Error(`brand: profile "${key}" homeDir must be a dot-prefixed lowercase directory name`)
+  }
+  return Object.freeze({ ...profile, homeDir })
 }
 
 /** The active, validated and frozen brand profile. */

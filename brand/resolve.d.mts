@@ -8,6 +8,7 @@ export interface BrandProfile {
   readonly backgroundColor: string
   readonly themeColor: string
   readonly artifactPrefix: string
+  readonly homeDir: string
 }
 export const BRAND_ROOT: string
 export const REPO_ROOT: string

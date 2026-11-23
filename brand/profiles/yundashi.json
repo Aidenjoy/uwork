@@ -6,5 +6,6 @@
   "brandColor": "#2D97D3",
   "backgroundColor": "#F5F5F5",
   "themeColor": "#2D97D3",
-  "artifactPrefix": "yundashi-agent"
+  "artifactPrefix": "yundashi-agent",
+  "homeDir": ".yundashi"
 }
